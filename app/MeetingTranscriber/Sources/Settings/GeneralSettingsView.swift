@@ -46,13 +46,15 @@ struct GeneralSettingsView: View {
                     """
                     Detects web meetings (Google Meet, Whereby, web Zoom/Teams) by the WebRTC \
                     signal, so any browser works. Other apps that place calls can trigger it too; \
-                    it always asks before recording, and "Never for this app" stops one for good.
+                    it asks before recording. "Always for this app" skips the question for one app, \
+                    and "Never for this app" stops one for good.
                     """,
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 browserConsentWarning
                 consentDenyList
+                consentAllowList
             }
 
             Section("Detection") {
@@ -112,6 +114,31 @@ struct GeneralSettingsView: View {
                 }
             }
             .accessibilityIdentifier(A11yID.consentDenyListSection)
+        }
+    }
+
+    /// Apps the user answered "Always for this app" about. Shown and written the
+    /// same way as `consentDenyList`, through `ConsentAllowListStore`; the only
+    /// reason to come here is to take back an Always.
+    @ViewBuilder private var consentAllowList: some View {
+        if !settings.consentAllowedApps.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Always record these apps")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(settings.consentAllowedApps.enumerated()), id: \.element) { index, app in
+                    HStack {
+                        Text(app)
+                            .font(.caption)
+                        Spacer()
+                        Button("Remove") {
+                            ConsentAllowListStore(settings: settings).revert(app)
+                        }
+                        .accessibilityIdentifier(A11yID.consentAllowedAppRemove(index))
+                    }
+                }
+            }
+            .accessibilityIdentifier(A11yID.consentAllowListSection)
         }
     }
 
