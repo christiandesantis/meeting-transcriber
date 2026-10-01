@@ -144,11 +144,17 @@ final class AppSettings {
 
     /// Apps the user answered "Never for this app" about on a browser-meeting
     /// consent prompt (see `ConsentDenyList`). Starts empty: there is nothing
-    /// to seed, because an app the user has approved is treated exactly like one
-    /// never seen (both still get the per-meeting prompt), so only refusals are
-    /// worth persisting.
+    /// to seed, because an app the user has approved once is treated exactly
+    /// like one never seen (both still get the per-meeting prompt).
     var consentDeniedApps: [String] {
         didSet { defaults.set(consentDeniedApps, forKey: "consentDeniedApps") }
+    }
+
+    /// Apps the user answered "Always for this app" about (see
+    /// `ConsentAllowList`). Starts empty, so an upgraded install keeps asking
+    /// until the user picks Always on a prompt.
+    var consentAllowedApps: [String] {
+        didSet { defaults.set(consentAllowedApps, forKey: "consentAllowedApps") }
     }
 
     /// Mic-input-detected call apps (see `MicInputDetector`). Off by default —
@@ -564,6 +570,7 @@ final class AppSettings {
         watchWebex = defaults.object(forKey: "watchWebex") as? Bool ?? true
         watchBrowserMeetings = defaults.object(forKey: "watchBrowserMeetings") as? Bool ?? false
         consentDeniedApps = defaults.stringArray(forKey: "consentDeniedApps") ?? []
+        consentAllowedApps = defaults.stringArray(forKey: "consentAllowedApps") ?? []
         watchWeChat = defaults.object(forKey: "watchWeChat") as? Bool ?? false
         watchTencentMeeting = defaults.object(forKey: "watchTencentMeeting") as? Bool ?? false
         watchFaceTime = defaults.object(forKey: "watchFaceTime") as? Bool ?? false

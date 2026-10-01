@@ -237,6 +237,7 @@ State writes to `AppPaths.dataDir`; IPC + queue snapshots to `ipcDir`.
 | `AppPickerStartState.swift` | Whether the app picker can start a recording, and if not, why |
 | `MicrophoneRecordingAvailability.swift` | Whether the menu bar's "Record Microphone" item can start a recording, and if not, why |
 | `ConsentDenyList.swift` | Persisted "Never for this app" browser-meeting consent denials (issue #503 follow-up), checked before the decline cooldown |
+| `ConsentAllowList.swift` | Persisted "Always for this app" browser-meeting consent approvals, which record without the prompt; the deny list outranks them |
 
 ### Audio Processing
 

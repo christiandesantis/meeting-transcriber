@@ -251,6 +251,7 @@ final class WatchingController {
                     },
                     notifier: notifier,
                     denyListStore: ConsentDenyListStore(settings: settings),
+                    allowListStore: ConsentAllowListStore(settings: settings),
                 )
 
                 attachStateChangeHandler(to: loop, notifyOnRecording: true)
@@ -459,8 +460,8 @@ final class WatchingController {
         // list to consult, hence the default in-memory store. If this path
         // ever gains auto-detection, route it through `makeDetector()` like
         // toggleWatching so the "Apps to Watch" filter still applies, and
-        // pass `denyListStore:` so a "Never for this app" is honoured here
-        // too.
+        // pass `denyListStore:` and `allowListStore:` so "Never for this
+        // app" and "Always for this app" are honoured here too.
         let loop = WatchLoop(
             recorderFactory: makeRecorderFactory(),
             pipelineQueue: pipeline.queue,

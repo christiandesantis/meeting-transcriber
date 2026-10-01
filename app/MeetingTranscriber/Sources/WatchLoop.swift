@@ -80,6 +80,7 @@ class WatchLoop {
     /// Internal so the consent gate can live in `WatchLoop+Consent.swift`.
     var consentPolicy: BrowserConsentPolicy
     let denyListStore: any ConsentDenyListStoring
+    let allowListStore: any ConsentAllowListStoring
 
     /// The app whose consent prompt is currently parked, nil when no question
     /// is open. The answer is awaited in `consentTask` rather than inline, so
@@ -131,6 +132,7 @@ class WatchLoop {
         pidAliveCheck: @escaping (pid_t) -> Bool = { kill($0, 0) == 0 },
         consentPolicy: BrowserConsentPolicy = BrowserConsentPolicy(),
         denyListStore: any ConsentDenyListStoring = InMemoryConsentDenyListStore(),
+        allowListStore: any ConsentAllowListStoring = InMemoryConsentAllowListStore(),
     ) {
         self.detector = detector
         self.recorderFactory = recorderFactory
@@ -149,6 +151,7 @@ class WatchLoop {
         self.pidAliveCheck = pidAliveCheck
         self.consentPolicy = consentPolicy
         self.denyListStore = denyListStore
+        self.allowListStore = allowListStore
     }
 
     nonisolated static var defaultOutputDir: URL {

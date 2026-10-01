@@ -230,6 +230,13 @@ final class NotificationManagerTests: XCTestCase {
         XCTAssertFalse(ConsentAnswer.never.isGranted)
     }
 
+    func testAlwaysActionIsItsOwnAnswerAndGrants() {
+        // Always records this call, so it must grant; and it is about the app,
+        // so it must not collapse into a plain .granted that remembers nothing.
+        XCTAssertEqual(NotificationManager.consentAnswer(for: NotificationManager.alwaysActionID), .always)
+        XCTAssertTrue(ConsentAnswer.always.isGranted)
+    }
+
     func testConsentDeclinedForIgnoreDismissAndDefault() {
         XCTAssertEqual(NotificationManager.consentAnswer(for: NotificationManager.ignoreActionID), .declined)
         XCTAssertEqual(NotificationManager.consentAnswer(for: UNNotificationDismissActionIdentifier), .declined)
@@ -237,7 +244,9 @@ final class NotificationManagerTests: XCTestCase {
         XCTAssertEqual(NotificationManager.consentAnswer(for: "something-else"), .declined)
     }
 
-    func testConsentCategoryHasRecordIgnoreAndNeverActions() {
+    func testConsentCategoryHasRecordIgnoreNeverAndAlwaysActions() {
+        // Order matters: a banner shows only the first two actions, which must
+        // stay Record and Ignore.
         let category = NotificationManager.makeConsentCategory()
         XCTAssertEqual(category.identifier, NotificationManager.consentCategoryID)
         XCTAssertEqual(
@@ -246,9 +255,13 @@ final class NotificationManagerTests: XCTestCase {
                 NotificationManager.recordActionID,
                 NotificationManager.ignoreActionID,
                 NotificationManager.neverActionID,
+                NotificationManager.alwaysActionID,
             ],
         )
-        XCTAssertEqual(category.actions.map(\.title), ["Record", "Ignore", "Never for this app"])
+        XCTAssertEqual(
+            category.actions.map(\.title),
+            ["Record", "Ignore", "Never for this app", "Always for this app"],
+        )
     }
 
     /// Neither action may carry `.foreground`. The delegate callback fires

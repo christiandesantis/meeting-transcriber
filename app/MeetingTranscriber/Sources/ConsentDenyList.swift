@@ -3,16 +3,15 @@ import Foundation
 /// Apps the user answered "Never for this app" about, so the browser-meeting
 /// consent prompt stops asking (issue #503 follow-up).
 ///
-/// This is the durable half of the consent answer. Ignore is per call and
-/// Record starts one recording; only Never has to outlive the prompt, because
-/// only Never is an answer about the *app* rather than about this one call.
+/// One of the two durable consent answers. Ignore is per call and Record starts
+/// one recording; Never and Always outlive the prompt, because they are answers
+/// about the *app* rather than about this one call.
 ///
-/// Deliberately one list, not a confirmed/denied pair. A positive list would
-/// carry no behaviour: an app the user has approved still gets the per-meeting
-/// prompt, exactly as a never-seen one does, because the WebRTC assertion is
-/// not meeting-exclusive (Google Meet holds it on a page you cannot even join).
-/// So "approved" and "unknown" are the same state as far as anything observable
-/// goes, and storing them apart would be bookkeeping that can only drift.
+/// Record alone still remembers nothing: an app the user approved once gets the
+/// per-meeting prompt exactly as a never-seen one does, because the WebRTC
+/// assertion is not meeting-exclusive (Google Meet holds it on a page you cannot
+/// even join). Skipping the prompt is a separate, explicit answer, kept on
+/// `ConsentAllowList`, and this list outranks it.
 ///
 /// Entries are process names exactly as the power assertion reports them, and
 /// they are matched exactly: the detector matches process names that way, and a

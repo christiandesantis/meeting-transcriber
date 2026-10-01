@@ -192,14 +192,93 @@ final class WatchLoopBrowserConsentTests: XCTestCase {
         // deny transition, which would silence the app the user just approved.
         let spy = ConsentSpy(answer: .granted)
         let store = InMemoryConsentDenyListStore()
+        let allowStore = InMemoryConsentAllowListStore()
         let (loop, _) = try makeLoop(
             detector: FixedDetector(browserMeeting(process: "Fjordfox")),
             spy: spy,
             denyListStore: store,
+            allowListStore: allowStore,
         )
         loop.start()
         await waitFor(spy.calls >= 1)
         XCTAssertEqual(store.denyList.denied, [], "Record is an answer about one call, not about the app")
+        XCTAssertEqual(allowStore.allowList.allowed, [], "Record must not turn into Always either")
+        loop.stop()
+    }
+
+    // MARK: - "Always for this app" (allow list)
+
+    func testAllowedAppRecordsWithoutAPrompt() async throws {
+        // The spy would decline if asked, so a recording proves the prompt was
+        // skipped rather than answered.
+        let spy = ConsentSpy(answer: .declined)
+        let allowStore = InMemoryConsentAllowListStore(
+            allowList: ConsentAllowList(allowed: ["Fjordfox"]),
+        )
+        let (loop, recorder) = try makeLoop(
+            detector: FixedDetector(browserMeeting(process: "Fjordfox")),
+            spy: spy,
+            allowListStore: allowStore,
+        )
+        loop.start()
+        await waitFor(recorder.startCalled)
+        XCTAssertTrue(recorder.startCalled, "an always-app must record on its own")
+        XCTAssertEqual(spy.calls, 0, "and must never reach the prompt")
+        loop.stop()
+    }
+
+    func testAlwaysRecordsThisCallAndRemembersTheApp() async throws {
+        let spy = ConsentSpy(answer: .always)
+        let allowStore = InMemoryConsentAllowListStore()
+        let (loop, recorder) = try makeLoop(
+            detector: FixedDetector(browserMeeting(process: "Fjordfox")),
+            spy: spy,
+            allowListStore: allowStore,
+        )
+        loop.start()
+        await waitFor(recorder.startCalled)
+        XCTAssertTrue(recorder.startCalled, "Always must record the call it was asked about")
+        XCTAssertEqual(allowStore.allowList.allowed, ["Fjordfox"])
+        XCTAssertEqual(spy.calls, 1)
+        loop.stop()
+    }
+
+    func testDeniedWinsOverAllowedInTheLoop() async throws {
+        // Both lists holding the same app can only come from hand-edited
+        // defaults, and must then fail safe: no prompt and no recording.
+        let spy = ConsentSpy(answer: .granted)
+        let (loop, recorder) = try makeLoop(
+            detector: FixedDetector(browserMeeting(process: "Fjordfox")),
+            spy: spy,
+            denyListStore: InMemoryConsentDenyListStore(denyList: ConsentDenyList(denied: ["Fjordfox"])),
+            allowListStore: InMemoryConsentAllowListStore(allowList: ConsentAllowList(allowed: ["Fjordfox"])),
+        )
+        loop.start()
+        await waitFor(recorder.startCalled, timeout: .milliseconds(500))
+        XCTAssertFalse(recorder.startCalled, "a denied app must never be recorded")
+        XCTAssertEqual(spy.calls, 0)
+        loop.stop()
+    }
+
+    func testAllowedAppRecordsWhileAnotherPromptIsParked() async throws {
+        // An always-app asks nothing, so the one-question-at-a-time rule has
+        // nothing to hold it back for, exactly as with a native meeting.
+        let spy = ParkingConsentSpy()
+        let detector = try SwappableDetector(browserMeeting(process: "Brave Browser"))
+        let (loop, recorder) = makeLoop(
+            detector: detector,
+            spy: spy,
+            allowListStore: InMemoryConsentAllowListStore(allowList: ConsentAllowList(allowed: ["Fjordfox"])),
+        )
+        loop.start()
+
+        await waitFor(spy.isParked)
+        detector.meeting = try browserMeeting(process: "Fjordfox")
+        await waitFor(recorder.startCalled, timeout: .seconds(3))
+        XCTAssertTrue(recorder.startCalled, "an always-app must record while another prompt waits")
+        XCTAssertEqual(spy.calls, 1, "and must not post a prompt of its own")
+
+        _ = spy.resolveBrowserConsent(granted: false)
         loop.stop()
     }
 
@@ -208,6 +287,7 @@ final class WatchLoopBrowserConsentTests: XCTestCase {
         spy: any AppNotifying,
         consentPolicy: BrowserConsentPolicy = BrowserConsentPolicy(),
         denyListStore: any ConsentDenyListStoring = InMemoryConsentDenyListStore(),
+        allowListStore: any ConsentAllowListStoring = InMemoryConsentAllowListStore(),
         nowProvider: @escaping () -> Date = Date.init,
     ) -> (WatchLoop, MockRecorder) {
         let recorder = MockRecorder()
@@ -221,6 +301,7 @@ final class WatchLoopBrowserConsentTests: XCTestCase {
             nowProvider: nowProvider,
             consentPolicy: consentPolicy,
             denyListStore: denyListStore,
+            allowListStore: allowListStore,
         )
         loop.permissionChecker = {
             HealthCheckResult(screenRecording: .healthy, microphone: .healthy)

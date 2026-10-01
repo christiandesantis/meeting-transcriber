@@ -33,6 +33,28 @@ final class BrowserConsentPolicyTests: XCTestCase {
         XCTAssertEqual(policy.decision(app: "Fjordfox", now: t0, isDenied: false), .ask)
     }
 
+    // MARK: - "Always for this app" skips the question, but never outranks Never
+
+    func testAllowedOutranksAnActiveCooldown() {
+        // An Always is an answer about the app, like a denial, so a cooldown left
+        // by an earlier Ignore must not hold back the recording.
+        var policy = BrowserConsentPolicy()
+        policy.recordDecline(app: "Fjordfox", now: t0)
+        XCTAssertEqual(policy.decision(app: "Fjordfox", now: t0.addingTimeInterval(1), isAllowed: true), .allowed)
+    }
+
+    func testDeniedOutranksAllowed() {
+        // An app on both lists must never be recorded without asking.
+        let policy = BrowserConsentPolicy()
+        XCTAssertEqual(policy.decision(app: "Fjordfox", now: t0, isDenied: true, isAllowed: true), .denied)
+    }
+
+    func testNotAllowedIsUnaffected() {
+        // Control: the flag defaults false and changes nothing on its own.
+        let policy = BrowserConsentPolicy()
+        XCTAssertEqual(policy.decision(app: "Fjordfox", now: t0, isAllowed: false), .ask)
+    }
+
     // MARK: - An unanswered prompt is not a "no" (issue #543)
 
     /// Saying no and never seeing the question are different answers, and they

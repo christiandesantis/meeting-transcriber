@@ -26,6 +26,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, App
     static let recordActionID = "BROWSER_MEETING_RECORD"
     static let ignoreActionID = "BROWSER_MEETING_IGNORE"
     static let neverActionID = "BROWSER_MEETING_NEVER"
+    static let alwaysActionID = "BROWSER_MEETING_ALWAYS"
     /// How long an unanswered prompt stays open before it resolves itself as
     /// `.expired`. Five minutes, not one: it no longer blocks anything (the
     /// watch loop kept polling since issue #543), and a minute was only ever
@@ -229,7 +230,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, App
 
     // MARK: - Consent prompt (issue #503)
 
-    /// The "record this browser meeting?" category with Record / Ignore actions.
+    /// The "record this browser meeting?" category with Record / Ignore /
+    /// Never / Always actions.
     static func makeConsentCategory() -> UNNotificationCategory {
         // No `.foreground` on either action: the delegate callback fires
         // whether or not the app is activated, so the flag adds nothing except
@@ -243,22 +245,28 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, App
         // a WebRTC assertion can reach this prompt, so the user needs a way to
         // retire one permanently rather than declining it every ten minutes.
         let never = UNNotificationAction(identifier: neverActionID, title: "Never for this app", options: [])
+        // Always is the opt-in mirror, for a browser kept only for calls. Last,
+        // so a banner, which shows just the first two actions, still offers
+        // Record and Ignore.
+        let always = UNNotificationAction(identifier: alwaysActionID, title: "Always for this app", options: [])
         return UNNotificationCategory(
             identifier: consentCategoryID,
-            actions: [record, ignore, never],
+            actions: [record, ignore, never, always],
             intentIdentifiers: [],
             options: [],
         )
     }
 
     /// Pure mapping from the tapped action to an answer. Only the explicit
-    /// Record action grants consent; Never is its own durable answer; Ignore, a
-    /// swipe-away dismiss, the default body tap and anything unrecognised all
-    /// decline, so an unknown identifier can never start a recording.
+    /// Record and Always actions grant consent; Never and Always are the durable
+    /// answers; Ignore, a swipe-away dismiss, the default body tap and anything
+    /// unrecognised all decline, so an unknown identifier can never start a
+    /// recording.
     static func consentAnswer(for actionIdentifier: String) -> ConsentAnswer {
         switch actionIdentifier {
         case recordActionID: .granted
         case neverActionID: .never
+        case alwaysActionID: .always
         default: .declined
         }
     }

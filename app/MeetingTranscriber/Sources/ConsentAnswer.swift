@@ -8,7 +8,7 @@ import Foundation
 /// for anyone who stepped away, and the *only* case before the prompt could
 /// break through Focus — was recorded as a deliberate refusal.
 ///
-/// Only `.granted` starts a recording. The distinction exists purely for
+/// Only `.granted` and `.always` start a recording. The distinction exists purely for
 /// `BrowserConsentPolicy`, which suppresses the next question for longer after
 /// a real refusal than after silence.
 enum ConsentAnswer: Equatable {
@@ -26,9 +26,13 @@ enum ConsentAnswer: Equatable {
     /// and is only undone in Settings. Mapping it onto `.declined` would
     /// re-prompt ten minutes later, which is the thing the user just said no to.
     case never
+    /// The user said yes *about this app*: the "Always for this app" action.
+    /// Records this call like `.granted`, and also puts the app on
+    /// `ConsentAllowList` so later calls in it record without asking.
+    case always
 
     /// Whether a recording may start.
     var isGranted: Bool {
-        self == .granted
+        self == .granted || self == .always
     }
 }

@@ -33,6 +33,9 @@ struct BrowserConsentPolicy {
         /// The user answered "Never for this app". Unlike `.suppressed` this
         /// carries no instant, because it does not expire.
         case denied
+        /// The user answered "Always for this app": record without asking.
+        /// Like `.denied` it ignores time, and it never outranks a denial.
+        case allowed
     }
 
     init(declineCooldown: TimeInterval = 600, expiryCooldown: TimeInterval = 60) {
@@ -50,11 +53,14 @@ struct BrowserConsentPolicy {
     /// `isDenied` is passed in rather than stored: a denial is persisted (see
     /// `ConsentDenyList`) while this policy is in-memory debounce state, and
     /// merging the two lifetimes would mean either persisting the cooldowns or
-    /// losing the denials on relaunch.
-    func decision(app: String, now: Date, isDenied: Bool = false) -> Decision {
+    /// losing the denials on relaunch. `isAllowed` is passed in for the same
+    /// reason (see `ConsentAllowList`).
+    func decision(app: String, now: Date, isDenied: Bool = false, isAllowed: Bool = false) -> Decision {
         // Checked first, and without consulting `now`: a denial is an answer
         // about the app, so no amount of elapsed time may revive the question.
         if isDenied { return .denied }
+        // After the denial, so an app on both lists is never recorded.
+        if isAllowed { return .allowed }
         if let until = suppressedUntil[app], now < until {
             return .suppressed(until: until)
         }

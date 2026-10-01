@@ -23,15 +23,22 @@ extension WatchLoop {
     /// meeting, neither a reason to ask again.
     func requestConsentIfNeeded(for meeting: DetectedMeeting) -> Bool {
         guard meeting.pattern.requiresRecordingConsent else { return false }
+        let app = meeting.pattern.appName
+        let decision = consentPolicy.decision(
+            app: app,
+            now: nowProvider(),
+            isDenied: denyListStore.isDenied(app),
+            isAllowed: allowListStore.isAllowed(app),
+        )
+        // Before the one-question guard: an always-app asks nothing, so like a
+        // native meeting it records even while another app's prompt is parked.
+        if decision == .allowed { return false }
         // One question at a time. The WebRTC assertion re-detects the same call
         // every poll, so without this the loop would post a fresh prompt every
         // few seconds while the first one is still on screen.
         guard pendingConsentApp == nil else { return true }
 
-        let app = meeting.pattern.appName
-        guard case .ask = consentPolicy.decision(
-            app: app, now: nowProvider(), isDenied: denyListStore.isDenied(app),
-        ) else {
+        guard case .ask = decision else {
             detector.reset(appName: app) // re-detect after the debounce
             return true
         }
@@ -103,6 +110,9 @@ extension WatchLoop {
             detector.reset(appName: app)
             return
         }
+        // Stored before the guards below: it is an answer about the app, so it
+        // holds even if this particular call ends before it can be recorded.
+        if answer == .always { allowListStore.allow(app) }
         // Minutes can pass between prompt and click, and watching may have been
         // switched off in between — recording then would be recording without
         // having been asked to watch at all.
