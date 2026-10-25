@@ -59,6 +59,9 @@ class WatchLoop {
     /// `recordings/` subfolder. Calling start-access on a child URL silently
     /// fails inside the App Store sandbox — see `RecordOnlyDestination`.
     let recordOnlyDestination: () -> RecordOnlyDestination
+    let outputFolders: () -> AppOutputFolders // per-app folders, read when a recording is handed on
+    let outputFolderConflict: () -> AppOutputFolders.Conflict? // read before every recording starts
+    @ObservationIgnored var reportedOutputConflict: AppOutputFolders.Conflict? // the refusal last notified
     /// Surface user-facing failures (e.g. sidecar write errors) that don't
     /// transition state to `.error`. Defaults to a silent no-op for tests.
     let notifier: any AppNotifying
@@ -123,6 +126,8 @@ class WatchLoop {
         recordOnlyDestination: @escaping () -> RecordOnlyDestination = {
             .unscoped(AppPaths.recordingsDir)
         },
+        outputFolders: @escaping () -> AppOutputFolders = { .empty },
+        outputFolderConflict: @escaping () -> AppOutputFolders.Conflict? = { nil },
         notifier: any AppNotifying = SilentNotifier(),
         nowProvider: @escaping () -> Date = Date.init,
         sleepProvider: @escaping (TimeInterval) async throws -> Void = { interval in
@@ -143,6 +148,8 @@ class WatchLoop {
         self.verboseDiagnostics = verboseDiagnostics
         self.recordOnly = recordOnly
         self.recordOnlyDestination = recordOnlyDestination
+        self.outputFolders = outputFolders
+        self.outputFolderConflict = outputFolderConflict
         self.notifier = notifier
         self.nowProvider = nowProvider
         self.sleepProvider = sleepProvider
@@ -233,6 +240,7 @@ class WatchLoop {
         if let refusal = health.recordingRefusalReason(for: source) {
             throw RecorderError.permissionDenied(refusal)
         }
+        if let conflict = outputFolderConflict() { throw conflict }
 
         // Stop auto-watch if active
         watchTask?.cancel()
@@ -315,7 +323,9 @@ class WatchLoop {
                 // an unanswered prompt used to stop `checkOnce()` from running
                 // for a full minute, so a Teams or Zoom call starting in that
                 // window went unrecorded.
-                if requestConsentIfNeeded(for: meeting) {
+                // A refused recording is checked first, so nobody is asked to
+                // consent to a call that will not be recorded.
+                if refusesRecordingForOutputFolders() || requestConsentIfNeeded(for: meeting) {
                     try? await sleepProvider(pollInterval)
                     continue
                 }
@@ -329,6 +339,7 @@ class WatchLoop {
     /// Record one meeting to completion and return to watching. True means the
     /// loop was cancelled mid-recording and must exit.
     private func runMeeting(_ meeting: DetectedMeeting) async -> Bool {
+        guard !refusesRecordingForOutputFolders() else { return false }
         do {
             try await handleMeeting(meeting)
         } catch {
@@ -493,6 +504,7 @@ class WatchLoop {
             micDelay: recording.micDelay,
             participants: participants,
             meetingStartTime: recording.recordingStartDate,
+            assignedOutputDir: assignedOutputFolder(forApp: appName),
         )
         pipelineQueue?.enqueue(job)
         logger.info("Enqueued pipeline job for: \(title, privacy: .private)")

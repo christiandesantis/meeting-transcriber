@@ -27,7 +27,10 @@ extension WatchLoop {
         let basename = RecordingFileSuffix.stripSuffix(from: mixName)?.stem
             ?? recording.mixPath.deletingPathExtension().lastPathComponent
 
-        let destination = recordOnlyDestination()
+        // A mapped app's own folder needs no security scope: the map is only
+        // read outside the sandbox.
+        let destination = assignedOutputFolder(forApp: appName).map(RecordOnlyDestination.production(parent:))
+            ?? recordOnlyDestination()
         // start/stopAccessingSecurityScopedResource MUST be called on the
         // URL that resolved from the bookmark (App Store sandboxed build,
         // or any custom Output Folder pick) — calling it on a child path

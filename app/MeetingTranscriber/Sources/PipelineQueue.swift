@@ -555,6 +555,17 @@ class PipelineQueue {
         job.sidecarDirs(orCurrent: outputDir)
     }
 
+    /// The folder every write of `job` goes under: the folder the per-app map
+    /// assigned it when it was created, else this queue's.
+    ///
+    /// Taken from the job rather than decided here, so a restored job, a retry
+    /// and a late re-run all keep the folder the recording was assigned, while
+    /// an unmapped job and a snapshot from before the map follow the queue
+    /// exactly as they did.
+    func outputRoot(of job: PipelineJob) -> URL? {
+        job.assignedOutputDir ?? outputDir
+    }
+
     /// The same folders a read should try, newest first.
     ///
     /// Newest first because that is where the latest write put the file, and
@@ -728,7 +739,7 @@ class PipelineQueue {
             }
         }
         do {
-            try naming.removeTranscriptSegments(slug: slug)
+            try naming.removeTranscriptSegments(slug: slug, in: outputRoot(of: jobs[index]))
         } catch {
             logger.warning(
                 "Failed to remove transcript segments according to output setting: \(error.localizedDescription, privacy: .public)",

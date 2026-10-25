@@ -59,6 +59,7 @@ struct PipelineJob: Identifiable, Codable {
 
     let meetingTitle: String
     let appName: String
+    let assignedOutputDir: URL? // per-app folder picked at creation; nil means the queue's, as in every older snapshot
     /// nil when the job is a paired-import without a `_mix.wav` source — the
     /// pipeline mixes `appPath`+`micPath` directly to the workdir `mix_16k.wav`
     /// in that case, so no persistent mix file is written.
@@ -201,7 +202,8 @@ struct PipelineJob: Identifiable, Codable {
     }
 
     /// Every folder this job's sidecars may sit in, oldest first, falling back
-    /// to `current` for a job that recorded none.
+    /// to the job's assigned folder, else `current`, for a job that recorded
+    /// none.
     ///
     /// The one place that answers it, because the queue asks for the cleanup's
     /// list, the queue's readers ask for the same list reversed, and the naming
@@ -209,7 +211,7 @@ struct PipelineJob: Identifiable, Codable {
     /// the field's accessor was introduced to end.
     func sidecarDirs(orCurrent current: URL?) -> [URL] {
         let recorded = sidecarOutputDirs
-        return recorded.isEmpty ? [current].compactMap(\.self) : recorded
+        return recorded.isEmpty ? [assignedOutputDir ?? current].compactMap(\.self) : recorded
     }
 
     /// Record that sidecars were written under `dir`, keeping any folder a
@@ -267,10 +269,12 @@ struct PipelineJob: Identifiable, Codable {
         includeFullTranscriptInProtocol: Bool? = nil,
         // swiftlint:disable:next discouraged_optional_boolean
         saveRawTranscriptSeparately: Bool? = nil,
+        assignedOutputDir: URL? = nil,
     ) {
         self.id = UUID()
         self.meetingTitle = meetingTitle
         self.appName = appName
+        self.assignedOutputDir = assignedOutputDir
         self.mixPath = mixPath
         self.appPath = appPath
         self.micPath = micPath

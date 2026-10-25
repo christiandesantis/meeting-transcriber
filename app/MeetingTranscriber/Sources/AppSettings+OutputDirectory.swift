@@ -69,6 +69,15 @@ extension AppSettings {
         outputDirectoryResolution.url
     }
 
+    /// Why recording is refused because the main output folder overlaps a
+    /// per-app folder, or nil. Judged against `effectiveOutputDir`, the folder
+    /// output actually goes to, so a fallback to the default is checked too.
+    var outputFolderConflict: AppOutputFolders.Conflict? {
+        let folders = outputFolderByApp
+        guard !folders.isEmpty else { return nil }
+        return folders.conflict(withMainFolder: effectiveOutputDir)
+    }
+
     /// Store a user-selected directory as a security-scoped bookmark.
     ///
     /// A failure keeps the previous choice and says so in the log, where it used

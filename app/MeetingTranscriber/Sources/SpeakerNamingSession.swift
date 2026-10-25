@@ -455,8 +455,10 @@ final class SpeakerNamingSession {
         speakerNamingDataByJob.removeValue(forKey: jobID)
         stashedSuggestedAtDialog.removeValue(forKey: jobID)
         stashedTopCandidates.removeValue(forKey: jobID)
+        // `sidecarDirs`, not the recorded list alone: a job assigned its own
+        // folder that recorded none yet must not fall back to this session's.
         let resolved = outputDirs.isEmpty
-            ? (delegate?.job(withID: jobID)?.sidecarOutputDirs ?? [])
+            ? (delegate?.job(withID: jobID)?.sidecarDirs(orCurrent: outputDir) ?? [])
             : outputDirs
         for store in stores(in: resolved) {
             store.deleteNamingJSON(slug: slug)
@@ -464,11 +466,12 @@ final class SpeakerNamingSession {
         }
     }
 
-    /// Removes only the transcript-bearing segment sidecar. The queue uses this
-    /// when the user opts out of permanent raw transcript output; audio remains
-    /// governed by the normal recording-retention policy.
-    func removeTranscriptSegments(slug: String?) throws {
-        try namingStore.deleteTranscriptSegments(slug: slug)
+    /// Removes only the transcript-bearing segment sidecar under `outputDir`,
+    /// the job's own folder. The queue uses this when the user opts out of
+    /// permanent raw transcript output; audio remains governed by the normal
+    /// recording-retention policy.
+    func removeTranscriptSegments(slug: String?, in outputDir: URL?) throws {
+        try SpeakerNamingStore(outputDir: outputDir).deleteTranscriptSegments(slug: slug)
     }
 
     /// Stores for each of `outputDirs`, or this session's own when the list is

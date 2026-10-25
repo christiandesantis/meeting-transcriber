@@ -253,6 +253,8 @@ final class WatchingController {
                     recordOnlyDestination: { [pipeline] in
                         .production(parent: pipeline.outputDirectory.resolve())
                     },
+                    outputFolders: { [settings] in settings.outputFolderByApp },
+                    outputFolderConflict: { [settings] in settings.outputFolderConflict },
                     notifier: notifier,
                     denyListStore: ConsentDenyListStore(settings: settings),
                 )
@@ -478,6 +480,8 @@ final class WatchingController {
             recordOnlyDestination: { [pipeline] in
                 .production(parent: pipeline.outputDirectory.resolve())
             },
+            outputFolders: { [settings] in settings.outputFolderByApp },
+            outputFolderConflict: { [settings] in settings.outputFolderConflict },
             notifier: notifier,
         )
         watchLoop = loop

@@ -27,6 +27,25 @@ enum OutputSettingsLogic {
         guard !selected.isEmpty, !available.contains(selected) else { return available }
         return [selected] + available
     }
+
+    /// One line of the read-only per-app folder list.
+    struct AppFolderRow: Hashable {
+        let app: String
+        let folder: String // display path, or why the entry is not used
+    }
+
+    static let unusableFolderNote = "Not an absolute path"
+
+    /// The per-app folder map as rows in app-name order, with paths shortened
+    /// the way the main folder's is. An unusable entry is listed too, since it
+    /// is what keeps recording off.
+    static func appFolderRows(_ folders: AppOutputFolders, home: URL) -> [AppFolderRow] {
+        let mapped = folders.folders.map { app, folder in
+            AppFolderRow(app: app, folder: displayPath(for: folder, home: home))
+        }
+        let unusable = folders.unusableApps.map { AppFolderRow(app: $0, folder: unusableFolderNote) }
+        return (mapped + unusable).sorted { $0.app < $1.app }
+    }
 }
 
 struct OutputSettingsView: View {
@@ -77,6 +96,10 @@ struct OutputSettingsView: View {
             }
             .accessibilityIdentifier(A11yID.outputFolderSection)
 
+            #if !APPSTORE
+                appFolderSection
+            #endif
+
             Section("Protocol Generation") {
                 Toggle("Include full transcript in protocol", isOn: $settings.includeFullTranscriptInProtocol)
                     .accessibilityIdentifier(A11yID.includeFullTranscriptToggle)
@@ -110,6 +133,40 @@ struct OutputSettingsView: View {
             refreshCustomPromptState()
         }
     }
+
+    #if !APPSTORE
+        /// The hidden per-app output folders, read only: they are set with
+        /// `defaults write`, and this shows what is in effect and whether it
+        /// keeps recording off. Absent while the map is empty.
+        @ViewBuilder
+        private var appFolderSection: some View { // swiftlint:disable:this attributes
+            let rows = OutputSettingsLogic.appFolderRows(
+                settings.outputFolderByApp, home: FileManager.default.homeDirectoryForCurrentUser,
+            )
+            if !rows.isEmpty {
+                Section("Output Folder per App") {
+                    ForEach(rows, id: \.self) { row in
+                        HStack {
+                            Text(row.app)
+                            Spacer()
+                            Text(row.folder)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    if let conflict = settings.outputFolderConflict {
+                        Label(conflict.message, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                    Text("Set with defaults write. Calls from any other app go to the output folder above.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    #endif
 
     @ViewBuilder
     private var providerConfigView: some View { // swiftlint:disable:this attributes

@@ -529,6 +529,19 @@ final class AppSettings {
     /// user's real Downloads folder, which is one step from writing into it.
     let defaultOutputDir: URL
 
+    /// The hidden per-app output folders (see `AppOutputFolders`). Read from
+    /// the defaults on every access rather than stored, because nothing in the
+    /// app writes the key: a `defaults write` then applies to the next
+    /// recording without a restart. Always empty in the App Store build.
+    var outputFolderByApp: AppOutputFolders {
+        #if APPSTORE
+            let value: Any? = nil
+        #else
+            let value = defaults.object(forKey: AppOutputFolders.defaultsKey)
+        #endif
+        return AppOutputFolders(defaultsValue: value, home: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
     // MARK: - Diagnostics
 
     /// Enables verbose diagnostic logging across **all** pipelines: audio

@@ -176,7 +176,7 @@ extension PipelineQueue {
             return
         }
 
-        guard let engine, let outputDir else {
+        guard let engine, let outputDir = outputRoot(of: job) else {
             logger.warning("Processing dependencies not configured — skipping")
             isProcessing = false
             return
