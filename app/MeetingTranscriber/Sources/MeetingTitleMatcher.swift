@@ -70,6 +70,35 @@ struct MeetingTitleMatcher {
         return firstNonIdle
     }
 
+    /// Title for a browser call, from the one process that asserted: the first
+    /// of its windows whose title looks like a call (see `looksLikeBrowserCall`),
+    /// else `nil` so the caller substitutes the placeholder.
+    ///
+    /// Stricter than `selectWindowTitle` on purpose. A browser window is named
+    /// after its active tab, so taking any surviving title would carry an
+    /// unrelated page name into file names, S3 keys, the model prompt and job
+    /// history.
+    func selectBrowserCallTitle(from windows: [[String: Any]]) -> String? {
+        for window in windows {
+            guard let owner = window["kCGWindowOwnerName"] as? String,
+                  ownerNames.contains(owner),
+                  let title = window["kCGWindowName"] as? String,
+                  Self.looksLikeBrowserCall(title) else {
+                continue
+            }
+            return title
+        }
+        return nil
+    }
+
+    /// True for a Google Meet tab title: `Meet - ...`, or any title carrying a
+    /// Meet code such as `abc-defg-hij`.
+    static func looksLikeBrowserCall(_ title: String) -> Bool {
+        title.hasPrefix("Meet - ") || title.range(of: meetCodePattern, options: .regularExpression) != nil
+    }
+
+    private static let meetCodePattern = "(?<![a-z0-9])[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z0-9])" // lowercase, as Meet issues them
+
     private static func anyMatch(_ regexes: [NSRegularExpression], _ title: String) -> Bool {
         let range = NSRange(title.startIndex..., in: title)
         return regexes.contains { $0.firstMatch(in: title, range: range) != nil }

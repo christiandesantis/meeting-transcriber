@@ -208,9 +208,40 @@ final class PowerAssertionDetectorIdentityTests: XCTestCase {
         detector.windowListProvider = {
             [
                 ["kCGWindowOwnerName": "Microsoft Edge", "kCGWindowName": "Private Banking"],
-                ["kCGWindowOwnerName": "Brave Browser", "kCGWindowName": "Weekly Sync"],
+                ["kCGWindowOwnerName": "Brave Browser", "kCGWindowName": "Meet - Weekly Sync"],
             ]
         }
-        XCTAssertEqual(detector.checkOnce()?.windowTitle, "Weekly Sync")
+        XCTAssertEqual(detector.checkOnce()?.windowTitle, "Meet - Weekly Sync")
+    }
+
+    func testABrowserTabThatIsNotACallGetsThePlaceholder() {
+        let detector = PowerAssertionFixture.browserDetector()
+        detector.assertionProvider = { PowerAssertionFixture.assertions((7, "Brave Browser", PowerAssertionFixture.webRTC)) }
+        detector.windowListProvider = {
+            [["kCGWindowOwnerName": "Brave Browser", "kCGWindowName": "Private Banking"]]
+        }
+        XCTAssertEqual(detector.checkOnce()?.windowTitle, "Brave Browser Call")
+    }
+
+    func testACallWindowIsPickedOverAnEarlierUnrelatedTab() {
+        let detector = PowerAssertionFixture.browserDetector()
+        detector.assertionProvider = { PowerAssertionFixture.assertions((7, "Brave Browser", PowerAssertionFixture.webRTC)) }
+        detector.windowListProvider = {
+            [
+                ["kCGWindowOwnerName": "Brave Browser", "kCGWindowName": "Private Banking"],
+                ["kCGWindowOwnerName": "Brave Browser", "kCGWindowName": "Standup abc-defg-hij"],
+            ]
+        }
+        XCTAssertEqual(detector.checkOnce()?.windowTitle, "Standup abc-defg-hij")
+    }
+
+    func testWhichTitlesLookLikeACall() {
+        XCTAssertTrue(MeetingTitleMatcher.looksLikeBrowserCall("Meet - Weekly Sync"))
+        XCTAssertTrue(MeetingTitleMatcher.looksLikeBrowserCall("Meet - abc-defg-hij"))
+        XCTAssertTrue(MeetingTitleMatcher.looksLikeBrowserCall("abc-defg-hij"))
+        XCTAssertFalse(MeetingTitleMatcher.looksLikeBrowserCall("Weekly Sync"))
+        XCTAssertFalse(MeetingTitleMatcher.looksLikeBrowserCall("Meeting notes"))
+        XCTAssertFalse(MeetingTitleMatcher.looksLikeBrowserCall("abc-defg-hijk"), "a longer run is not a code")
+        XCTAssertFalse(MeetingTitleMatcher.looksLikeBrowserCall("one-two-three-four"))
     }
 }

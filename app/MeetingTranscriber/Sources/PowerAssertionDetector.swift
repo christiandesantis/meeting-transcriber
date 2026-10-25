@@ -394,7 +394,8 @@ class PowerAssertionDetector: MeetingDetecting {
     /// Calendar tab etc.), and returns nil when nothing usable is found so the
     /// caller can substitute a placeholder instead of the raw assertion name.
     /// `.shared` patterns use the matcher compiled at init. `.perProcess` hits
-    /// build one from the synthesised identity, whose `ownerNames` is exactly
+    /// build one from the synthesised identity and accept only a title that
+    /// looks like a call (`Meet - ...` or one with a Meet code), else nil; whose `ownerNames` is exactly
     /// the one process that asserted, so only that browser's own windows can
     /// supply the title. A shared owner list would let any fork in the family
     /// contribute, which is how an unrelated tab title reached the protocol
@@ -404,11 +405,15 @@ class PowerAssertionDetector: MeetingDetecting {
         for meetingPattern: AppMeetingPattern,
         pattern: AssertionPattern,
     ) -> String? {
-        let matcher = switch pattern.identity {
-        case .shared: matchers[pattern.appName]
-        case .perProcess: MeetingTitleMatcher(pattern: meetingPattern)
+        switch pattern.identity {
+        case .shared:
+            return matchers[pattern.appName]?.selectWindowTitle(from: windowListProvider())
+
+        case .perProcess:
+            // Only a title that looks like a call: a browser window carries
+            // whatever tab is open, which must not reach file names or prompts.
+            return MeetingTitleMatcher(pattern: meetingPattern).selectBrowserCallTitle(from: windowListProvider())
         }
-        return matcher?.selectWindowTitle(from: windowListProvider())
     }
 
     // MARK: - Private
