@@ -72,6 +72,20 @@ GIT_HASH=$(git -C "$TRANSCRIBER_ROOT" rev-parse --short HEAD 2>/dev/null || echo
 
 cp "$BUILD_BINARY" "$APP_BINARY"
 
+# App icon, built the same way build_release.sh builds it: Info.plist already
+# names AppIcon, so without the file the dev app shows the generic icon.
+ICONSET_SRC="$TRANSCRIBER_ROOT/app/MeetingTranscriber/Sources/Assets.xcassets/AppIcon.appiconset"
+if [ -d "$ICONSET_SRC" ]; then
+    ICONSET="$(mktemp -d)/AppIcon.iconset"
+    mkdir -p "$ICONSET" "$APP_BUNDLE/Contents/Resources"
+    for size in 16x16 32x32 128x128 256x256 512x512; do
+        cp "$ICONSET_SRC/icon_${size}.png" "$ICONSET/icon_${size}.png"
+        cp "$ICONSET_SRC/icon_${size}@2x.png" "$ICONSET/icon_${size}@2x.png"
+    done
+    iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+    rm -rf "$(dirname "$ICONSET")"
+fi
+
 # Licences for the third-party code and weights this bundle redistributes. The
 # dev app is not distributed, but scripts/e2e-app.sh deploys it, so keeping it
 # identical to a release bundle is what makes an e2e run evidence about the
