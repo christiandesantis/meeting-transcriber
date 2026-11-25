@@ -18,6 +18,12 @@ struct AudioSettingsView: View {
                         }
                     }
                     .onAppear { refreshAudioDevices() }
+
+                    Toggle("Start Recordings with Mic Muted", isOn: $settings.startRecordingsMicMuted)
+                        .accessibilityIdentifier(A11yID.startRecordingsMicMutedToggle)
+                        .help("Your voice stays out of app recordings until you unmute. Microphone-only recordings always start unmuted.")
+
+                    MicMuteHotkeyRow(hotkey: $settings.micMuteHotkey)
                 }
             }
 
@@ -76,7 +82,7 @@ private struct EchoSection: View {
     var body: some View {
         Section("Echo") {
             HelpfulToggle(
-                title: "Remove echoed remote speech before transcribing",
+                title: "Remove echoed remote speech from the microphone audio",
                 help: SettingsHelp.echoCancellation,
                 isOn: $settings.echoCancellationEnabled,
             )

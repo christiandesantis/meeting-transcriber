@@ -28,6 +28,89 @@ extension DualSourceRecorder {
         }
     }
 
+    /// Write the mix through `write` into a staging file next to `mixPath`
+    /// and rename it into place only once `write` has returned, so `mixPath`
+    /// exists only complete (see `RecordingFileSuffix.mixStaging`). A throw
+    /// leaves no mix; the staging file it leaves is removed here, or by
+    /// `removeStaleMixStaging` if the process ends first. `rename(2)`
+    /// replaces an existing mix atomically.
+    ///
+    /// The staging name is unique per write, not per stem: two re-mixes of
+    /// one stem can overlap (every queue rebuild starts a staging recovery),
+    /// and with a shared name one write unlinked the other's file and that
+    /// one's rename then put a half-written file in place as the mix.
+    nonisolated static func writeMixAtomically(to mixPath: URL, _ write: (URL) throws -> Void) throws {
+        let name = mixPath.lastPathComponent
+        let stem = name.hasSuffix(RecordingFileSuffix.mix) ? String(name.dropLast(RecordingFileSuffix.mix.count)) : name
+        let staging = mixPath.deletingLastPathComponent()
+            .appendingPathComponent("\(stem).\(UUID().uuidString)\(RecordingFileSuffix.mixStaging)")
+        do {
+            try write(staging)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
+        guard rename(staging.path, mixPath.path) == 0 else {
+            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+            try? FileManager.default.removeItem(at: staging)
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSUnderlyingErrorKey: POSIXError(code)])
+        }
+    }
+
+    /// Cross-check the device-reported sample rate against raw file size and mic duration.
+    /// Returns the corrected rate (snapped to standard), or the device rate if cross-check
+    /// is unavailable or agrees.
+    nonisolated static func crossCheckAppRate(
+        deviceRate: Int,
+        appRawBytes: Int,
+        appChannels: Int,
+        micDurationSeconds: Double?,
+        micDelay: TimeInterval,
+    ) -> Int {
+        guard let micDuration = micDurationSeconds, micDuration > 3.0 else {
+            return deviceRate
+        }
+        let appDuration = micDuration + micDelay
+        guard appDuration > 3.0 else { return deviceRate }
+
+        guard let inferred = SampleRateQuery.inferRateFromDuration(
+            rawBytes: appRawBytes,
+            bytesPerSample: MemoryLayout<Float>.size,
+            channels: max(appChannels, 1),
+            durationSeconds: appDuration,
+        ) else { return deviceRate }
+
+        let snapped = SampleRateQuery.snapToStandardRate(inferred)
+
+        // Only override if significantly different (> 5% deviation)
+        let deviation = abs(Double(snapped - deviceRate)) / Double(max(deviceRate, 1))
+        if deviation > 0.05 {
+            logger.warning("Rate cross-check: device=\(deviceRate), inferred=\(inferred), snapped=\(snapped) — overriding")
+            return snapped
+        }
+        return deviceRate
+    }
+
+    /// The raw app temp (interleaved Float32) as samples. A function of its
+    /// own so the file's bytes are released when it returns rather than
+    /// staying alive next to the samples for the rest of `buildRecording`.
+    nonisolated private static func readRawFloat32(at url: URL) throws -> [Float] {
+        let raw = try Data(contentsOf: url)
+        let floatCount = raw.count / MemoryLayout<Float>.size
+        var floats = [Float](repeating: 0, count: floatCount)
+        raw.withUnsafeBytes { ptr in
+            if let base = ptr.baseAddress {
+                floats.withUnsafeMutableBufferPointer { dest in
+                    dest.baseAddress!.initialize( // swiftlint:disable:this force_unwrapping
+                        from: base.assumingMemoryBound(to: Float.self),
+                        count: floatCount,
+                    )
+                }
+            }
+        }
+        return floats
+    }
+
     /// Convert a finished `AudioCaptureResult` (raw app `.tmp` + optional mic
     /// WAV) into a mixed 16 kHz `RecordingResult`: cross-check the rate, downmix
     /// + resample the app track, load the mic track, then mix or fall back to a
@@ -84,6 +167,9 @@ extension DualSourceRecorder {
         }
 
         // ── Load mic audio ──
+        // The app temp when it holds any bytes. The app WAV is then written
+        // from it below, or the function throws.
+        let appTempURL = appRawBytes > 0 ? tempURL : nil
         var micPath: URL?
         var micSamples: [Float] = []
         let expectedMicPath = captureResult.micAudioFileURL
@@ -102,7 +188,11 @@ extension DualSourceRecorder {
             // treats a missing or too-small file.
             if let micAudioFile = try? AVAudioFile(forReading: expectedMicPath),
                let loaded = try? AudioMixer.loadAudioFileAsFloat32(url: expectedMicPath) {
-                micSamples = loaded
+                // Kept only for a microphone-only mix. With an app track the
+                // mixer reads both tracks back from their files (see the mix
+                // below), and holding these here as well would keep a full
+                // track alive through the app conversion and the mix.
+                if appTempURL == nil { micSamples = loaded }
                 micPath = expectedMicPath
                 let micFileRate = Int(micAudioFile.processingFormat.sampleRate)
                 logger.info("Mic audio loaded: \(expectedMicPath.lastPathComponent) (\(micFileRate) Hz)")
@@ -134,36 +224,19 @@ extension DualSourceRecorder {
         // and the app WAV is on disk by the end of that block.
         // ── Convert app audio from temp file to Float32 mono ──
         var appPath: URL?
-        var appSamples: [Float] = []
         var appSamples16k: [Float] = []
 
-        if let tempURL, appRawBytes > 0 {
-            let raw = try Data(contentsOf: tempURL)
-
-            let floatCount = raw.count / MemoryLayout<Float>.size
-            var floats = [Float](repeating: 0, count: floatCount)
-            raw.withUnsafeBytes { ptr in
-                if let base = ptr.baseAddress {
-                    floats.withUnsafeMutableBufferPointer { dest in
-                        dest.baseAddress!.initialize( // swiftlint:disable:this force_unwrapping
-                            from: base.assumingMemoryBound(to: Float.self),
-                            count: floatCount,
-                        )
-                    }
-                }
-            }
-
-            appSamples = downmixToMono(floats, channels: actualChannels)
-
-            // Resample to 16kHz and save app track
-            appSamples16k = AudioMixer.resample(appSamples, from: actualRate, to: format.targetRate)
+        if let appTempURL {
+            // Downmix and resample to 16 kHz in one expression, so no copy of
+            // the track outlives it: on the production path the temp is
+            // already 16 kHz mono and all three steps hand on one buffer, and
+            // a second name for it would keep a full copy alive through the
+            // pad below. About 230 MB per recorded hour at 16 kHz Float32.
+            appSamples16k = try AudioMixer.resample(
+                downmixToMono(readRawFloat32(at: appTempURL), channels: actualChannels),
+                from: actualRate, to: format.targetRate,
+            )
             if normalisation.padFrames > 0 {
-                // Released first: on the production path the temp is already
-                // 16 kHz mono, so `floats`, `appSamples` and `appSamples16k`
-                // share one buffer, and the concatenation below would otherwise
-                // hold a second full copy of the track alive to the end of the
-                // function. About 220 MB per recorded hour at 16 kHz Float32.
-                appSamples = []
                 appSamples16k = [Float](repeating: 0, count: normalisation.padFrames) + appSamples16k
             }
             let appFile = recDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.app)")
@@ -188,21 +261,32 @@ extension DualSourceRecorder {
         let mixRate = format.targetRate
         let mixPath = recDir.appendingPathComponent("\(ts)\(RecordingFileSuffix.mix)")
 
-        if let app = appPath, let mic = micPath {
-            // Delegate mute masking, echo suppression, delay alignment, and mixing
-            try AudioMixer.mix(
-                appAudioPath: app,
-                micAudioPath: mic,
-                outputPath: mixPath,
-                micDelay: normalisation.reportedDelay,
-                sampleRate: mixRate,
-            )
-        } else if !appSamples16k.isEmpty {
-            try AudioMixer.saveWAV(samples: appSamples16k, sampleRate: mixRate, url: mixPath)
-        } else if !micSamples.isEmpty {
-            try AudioMixer.saveWAV(samples: micSamples, sampleRate: mixRate, url: mixPath)
-        } else {
+        guard (appPath != nil && micPath != nil) || !appSamples16k.isEmpty || !micSamples.isEmpty else {
             throw RecorderError.noAudioData
+        }
+        // The mixer reads both tracks back from their files, and has to: the
+        // app file holds the 16-bit rounding of `appSamples16k`, and the mix
+        // has always been built from what was written, not from the floats.
+        // From here on the app track held in this function is dead weight, a
+        // full track (about 230 MB per recorded hour) next to the mixer's own.
+        if appPath != nil, micPath != nil {
+            appSamples16k = []
+        }
+        try writeMixAtomically(to: mixPath) { staging in
+            if let app = appPath, let mic = micPath {
+                // Delegate mute masking, echo suppression, delay alignment, and mixing
+                try AudioMixer.mix(
+                    appAudioPath: app,
+                    micAudioPath: mic,
+                    outputPath: staging,
+                    micDelay: normalisation.reportedDelay,
+                    sampleRate: mixRate,
+                )
+            } else if !appSamples16k.isEmpty {
+                try AudioMixer.saveWAV(samples: appSamples16k, sampleRate: mixRate, url: staging)
+            } else {
+                try AudioMixer.saveWAV(samples: micSamples, sampleRate: mixRate, url: staging)
+            }
         }
 
         logger.info("Mix saved: \(mixPath.lastPathComponent)")
@@ -221,5 +305,53 @@ extension DualSourceRecorder {
             micDelay: normalisation.reportedDelay,
             recordingStartDate: recordingStartDate,
         )
+    }
+
+    /// Delete mix staging files a write cut off by the process exit left
+    /// behind. Runs after crash recovery, which re-mixes a rescuable stem
+    /// under a staging name of its own, so what is left is litter whether or
+    /// not the stem got a mix. `cutoff` spares a write still in progress.
+    nonisolated static func removeStaleMixStaging(in entries: [URL], olderThan cutoff: Date) {
+        let fm = FileManager.default
+        for file in entries where file.lastPathComponent.hasSuffix(RecordingFileSuffix.mixStaging) {
+            if let mtime = (try? fm.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date,
+               mtime > cutoff { continue }
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    /// What `finish` needs from a recording whose capture has stopped.
+    struct StoppedCapture {
+        let captureResult: AudioCaptureResult
+        let recordingsDir: URL
+        let timestamp: String
+        let recordingStartDate: Date
+        let format: CaptureFormat
+    }
+
+    /// The file half of a stop: build the tracks and the mix, then drop the
+    /// in-progress marker. Touches no recorder state, so it runs anywhere.
+    nonisolated static func finish(_ stopped: StoppedCapture) throws -> RecordingResult {
+        var recording = try buildRecording(
+            from: stopped.captureResult,
+            recordingsDir: stopped.recordingsDir,
+            timestamp: stopped.timestamp,
+            recordingStartDate: stopped.recordingStartDate,
+            format: stopped.format,
+        )
+
+        // Dropped only once the mix exists, exactly where `buildRecording`
+        // drops the raw app temp. A stop whose mix write fails has not
+        // finished anything, and the failure (a full disk, say) usually
+        // survives to the next launch: keeping the marker lets that launch
+        // re-mix from the surviving tracks, which is what the app-audio path
+        // has always got from its temp. The mix itself is what stops a
+        // completed recording from being recovered twice.
+        try? FileManager.default.removeItem(
+            at: inProgressMarker(stem: stopped.timestamp, in: stopped.recordingsDir),
+        )
+        recording.micMuteIntervals = recording.micPath != nil ? stopped.captureResult.micMuteIntervals : []
+        MicMuteLog.remove(stem: stopped.timestamp, in: stopped.recordingsDir)
+        return recording
     }
 }

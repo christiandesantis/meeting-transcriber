@@ -136,7 +136,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase { // swiftlint:disable:this 
         try await loop.startManualRecording(pid: 42, appName: Self.browser, title: "Standup")
 
         XCTAssertEqual(loop.state, .recording)
-        loop.stopManualRecording()
+        await loop.stopManualRecording()
     }
 
     func testARefusalIsNotifiedOnceUntilItClears() throws {

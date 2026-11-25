@@ -7,6 +7,15 @@ protocol RecordingProvider {
     func start(source: RecordingSource, micDeviceUID: String?, debugLogging: Bool) throws
     func stop() throws -> RecordingResult
 
+    /// `stop()` with the file work (reading the tracks back, mixing, writing
+    /// the mix) off the main actor. Ending the capture itself still happens on
+    /// the caller's actor. What every stop of a recording uses
+    /// (`WatchLoop.stopAndEnqueue`): the mix of a long recording takes
+    /// seconds, which on the main actor froze the app and held a quit's
+    /// budget timer. Default: the synchronous `stop()`, for doubles that have
+    /// no file work to move.
+    func stopOffMain() async throws -> RecordingResult
+
     /// Instantaneous app-audio level in dBFS. -120 when no capture session is
     /// active or the tap stopped delivering buffers in the last 0.5 s.
     /// Drives the menu-bar asymmetric-silence indicator. Default: -120
@@ -25,10 +34,25 @@ protocol RecordingProvider {
     var appCaptureGaveUp: Bool { get }
     var micCaptureGaveUp: Bool { get }
 
+    /// True when the microphone's give-up was a first start that did not
+    /// return within its deadline (issue #778), not a failed restart. Only
+    /// the notice's wording depends on it. Default false.
+    var micCaptureStartTimedOut: Bool { get }
+
     /// True once the opt-in silent-track watchdog stopped rebuilding the app
     /// capture because its rebuilds did not restore signal (issue #672). Not a
     /// give-up: the channel still captures. Default false.
     var appSilentTrackWatchdogGaveUp: Bool { get }
+
+    /// The app tap's noise-floor verdict (issue #699), see
+    /// `AppNoiseFloorSensor`. Default false.
+    var appCarriesOnlyNoiseFloor: Bool { get }
+
+    /// Whether the microphone is released because it went without audio for
+    /// the capture layer's whole budget, and how many times it was (issues
+    /// #724, #706). Unlike a give-up it can clear: a device change brings the
+    /// microphone back.
+    var micCaptureStall: MicCaptureStall { get }
 
     /// How long each channel has gone without a buffer, and without one
     /// carrying signal. This is what says whether a channel is broken;
@@ -38,6 +62,17 @@ protocol RecordingProvider {
     /// that does not simulate capture never looks broken.
     var appSignalAges: ChannelSignalAges { get }
     var micSignalAges: ChannelSignalAges { get }
+
+    /// Whether this recording has an open microphone that can be muted. Default
+    /// false, so a double that does not simulate mute offers no control.
+    var canMuteMic: Bool { get }
+    var isMicMuted: Bool { get }
+    func setMicMuted(_ muted: Bool)
+    /// Have the next `start` silence the microphone from its first buffer, so
+    /// the mute times begin at second 0. Call before `start`; a mute set after
+    /// it would let the first buffers through. Default: nothing, like
+    /// `setMicMuted`.
+    func muteMicFromStart()
 }
 
 extension ChannelSignalAges {
@@ -49,6 +84,13 @@ extension ChannelSignalAges {
 }
 
 extension RecordingProvider {
+    // Async only to satisfy the requirement: a double has no file work to
+    // move, so its stop stays where it is called.
+    // swiftlint:disable:next async_without_await
+    func stopOffMain() async throws -> RecordingResult {
+        try stop()
+    }
+
     var appLevelDBFS: Double {
         -120
     }
@@ -65,8 +107,20 @@ extension RecordingProvider {
         false
     }
 
+    var micCaptureStartTimedOut: Bool {
+        false
+    }
+
     var appSilentTrackWatchdogGaveUp: Bool {
         false
+    }
+
+    var appCarriesOnlyNoiseFloor: Bool {
+        false
+    }
+
+    var micCaptureStall: MicCaptureStall {
+        MicCaptureStall()
     }
 
     var appSignalAges: ChannelSignalAges {
@@ -76,4 +130,16 @@ extension RecordingProvider {
     var micSignalAges: ChannelSignalAges {
         .deliveringSignalNow
     }
+
+    var canMuteMic: Bool {
+        false
+    }
+
+    var isMicMuted: Bool {
+        false
+    }
+
+    func setMicMuted(_: Bool) {}
+
+    func muteMicFromStart() {}
 }

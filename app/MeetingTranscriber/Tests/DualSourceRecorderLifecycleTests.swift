@@ -24,26 +24,47 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         /// The mic track `stop()` reports, set by a test after `start()` has
         /// picked the URL and the test has written fixture audio there.
         var micTrack: URL?
+        /// The raw app temp `stop()` reports; nil for the mic-only tests.
+        var appTrack: URL?
         var appLevelDBFS: Double = -120
         var micLevelDBFS: Double = -120
         var appCaptureGaveUp = false
         var micCaptureGaveUp = false
+        var micCaptureStartTimedOut = false
         var appSilentTrackWatchdogGaveUp = false
+        var appCarriesOnlyNoiseFloor = false
+        var micCaptureStall = MicCaptureStall()
         var appSignalAges: ChannelSignalAges = .unknown
         var micSignalAges: ChannelSignalAges = .unknown
         /// The configuration the recorder handed the factory, so a test can
         /// assert on the choices and write to the URLs it picked.
         var lastConfiguration: AudioCaptureConfiguration?
+        /// False stands in for a microphone that failed to open.
+        var micOpen = true
+        var muteTimeline = MicMuteTimeline()
+        var micMuteIntervals: [MicMuteInterval] = []
+        var hasOpenMic: Bool {
+            micOpen
+        }
+
+        func setMicMuted(_ muted: Bool) -> MicMuteTimeline? {
+            guard micOpen else { return nil }
+
+            muteTimeline.setMuted(muted)
+            return muteTimeline
+        }
 
         func start() throws {
             if let startError { throw startError }
         }
 
         func stop() -> AudioCaptureResult {
-            AudioCaptureResult(
-                appAudioFileURL: nil, micAudioFileURL: micTrack,
+            var result = AudioCaptureResult(
+                appAudioFileURL: appTrack, micAudioFileURL: micTrack,
                 actualSampleRate: 16000, actualChannels: 1, micDelay: 0,
             )
+            result.micMuteIntervals = micMuteIntervals
+            return result
         }
     }
 
@@ -157,6 +178,59 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         )
     }
 
+    /// The quit's stop moves the file work off the main actor and must still
+    /// finish a recording exactly as `stop()` does: a mix on disk, the
+    /// recorder idle, the marker gone.
+    func testStopOffMainFinishesTheRecordingLikeStop() async throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_stop_off_main")
+        let (recorder, session) = makeRecorder(dir: dir)
+        let micURL = try startMicOnly(recorder: recorder, session: session)
+        try AudioMixer.saveWAV(samples: [Float](repeating: 0.2, count: 16000), sampleRate: 16000, url: micURL)
+        session.micTrack = micURL
+
+        let recording = try await recorder.stopOffMain()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.mixPath.path))
+        XCTAssertEqual(recording.micPath, micURL)
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertEqual(try markerStems(in: dir), [])
+    }
+
+    /// `stopOffMain` is only worth having if the file work really leaves the
+    /// main thread: the protocol's default is the synchronous `stop()`, so a
+    /// recorder without its own version would pass every other test. Measured
+    /// by a main-actor ticker: while the stop runs, the ticker keeps ticking
+    /// only if the main thread is free.
+    func testStopOffMainLeavesTheMainThreadFreeWhileItMixes() async throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_stop_off_main_free")
+        let (recorder, session) = makeRecorder(dir: dir)
+        let micURL = try startMicOnly(recorder: recorder, session: session)
+        // Both tracks, so the stop really mixes, and long enough that it takes
+        // a measurable time in a debug build.
+        let samples = [Float](repeating: 0.2, count: 16000 * 120)
+        try AudioMixer.saveWAV(samples: samples, sampleRate: 16000, url: micURL)
+        session.micTrack = micURL
+        let appTemp = dir.appendingPathComponent("app_temp" + RecordingFileSuffix.appRaw)
+        try writeRawFloat32(samples, to: appTemp)
+        session.appTrack = appTemp
+
+        let ticks = MainThreadTicker()
+        let ticker = Task { await ticks.run() }
+        await Task.yield()
+        let start = ContinuousClock.now
+        _ = try await recorder.stopOffMain()
+        let elapsed = ContinuousClock.now - start
+        ticks.ticking = false
+        await ticker.value
+        let longestGap = ticks.longestGap
+
+        XCTAssertGreaterThan(elapsed, .milliseconds(100), "test premise: the stop was too fast to tell")
+        XCTAssertLessThan(
+            longestGap, elapsed / 2,
+            "the main thread was held for \(longestGap) of a \(elapsed) stop",
+        )
+    }
+
     /// A stop whose mix write fails has finished nothing. Keeping the marker is
     /// what lets the next launch re-mix from the surviving tracks — the same
     /// second chance the app-audio path has always had from its raw temp.
@@ -192,7 +266,11 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         session.micLevelDBFS = -30
         session.appCaptureGaveUp = true
         session.micCaptureGaveUp = false
+        // Differs from `micCaptureGaveUp` on purpose, so a forwarder reading
+        // the give-up under this name fails.
+        session.micCaptureStartTimedOut = true
         session.appSilentTrackWatchdogGaveUp = true
+        session.appCarriesOnlyNoiseFloor = true
         session.appSignalAges = ChannelSignalAges(secondsSinceLastBuffer: 1, secondsSinceLastEnergy: 2)
         session.micSignalAges = ChannelSignalAges(secondsSinceLastBuffer: 3, secondsSinceLastEnergy: 4)
 
@@ -203,7 +281,9 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         XCTAssertEqual(recorder.micLevelDBFS, -120, accuracy: 0.001)
         XCTAssertFalse(recorder.appCaptureGaveUp)
         XCTAssertFalse(recorder.micCaptureGaveUp)
+        XCTAssertFalse(recorder.micCaptureStartTimedOut)
         XCTAssertFalse(recorder.appSilentTrackWatchdogGaveUp)
+        XCTAssertFalse(recorder.appCarriesOnlyNoiseFloor)
         // Never opened, not "opened and long silent": the fault monitor reads
         // the two apart, so the no-session answer has to be the absent one.
         XCTAssertEqual(recorder.appSignalAges, .unknown)
@@ -215,11 +295,16 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         XCTAssertEqual(recorder.micLevelDBFS, -30, accuracy: 0.001)
         XCTAssertTrue(recorder.appCaptureGaveUp)
         XCTAssertFalse(recorder.micCaptureGaveUp)
+        XCTAssertTrue(recorder.micCaptureStartTimedOut)
         XCTAssertTrue(recorder.appSilentTrackWatchdogGaveUp)
         // Its own flag, not the give-up one read under another name.
         session.appCaptureGaveUp = false
         XCTAssertTrue(recorder.appSilentTrackWatchdogGaveUp)
         session.appCaptureGaveUp = true
+        XCTAssertTrue(recorder.appCarriesOnlyNoiseFloor)
+        // Its own flag too: every other app flag above is also true.
+        session.appCarriesOnlyNoiseFloor = false
+        XCTAssertFalse(recorder.appCarriesOnlyNoiseFloor)
         XCTAssertEqual(recorder.appSignalAges.secondsSinceLastBuffer, 1)
         XCTAssertEqual(recorder.appSignalAges.secondsSinceLastEnergy, 2)
         XCTAssertEqual(recorder.micSignalAges.secondsSinceLastBuffer, 3)
@@ -249,6 +334,78 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
         XCTAssertEqual(session.lastConfiguration?.silentTrackWatchdog, true)
     }
 
+    // MARK: - Mic mute
+
+    private func logStems(in dir: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .filter { $0.hasSuffix(RecordingFileSuffix.micMuteLog) }
+    }
+
+    func testStartMutedAppliesToAnAppRecordingAndIsSavedAtOnce() throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_app")
+        let (recorder, session) = makeRecorder(dir: dir)
+        recorder.micStartsMuted = true
+        try recorder.start(source: .forApp(pid: getpid(), noMic: false))
+
+        XCTAssertEqual(session.lastConfiguration?.micStartsMuted, true)
+        XCTAssertTrue(recorder.isMicMuted)
+        XCTAssertEqual(try logStems(in: dir).count, 1)
+    }
+
+    /// The watch loop's way in when it continues a muted call: the same
+    /// pre-start mute as the setting, so not one buffer goes through unmuted.
+    func testMuteFromStartAppliesBeforeTheSessionOpens() throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_from_start")
+        let (recorder, session) = makeRecorder(dir: dir)
+        recorder.muteMicFromStart()
+        try recorder.start(source: .forApp(pid: getpid(), noMic: false))
+
+        XCTAssertEqual(session.lastConfiguration?.micStartsMuted, true)
+        XCTAssertTrue(recorder.isMicMuted)
+        XCTAssertEqual(try logStems(in: dir).count, 1)
+    }
+
+    func testStartMutedDoesNotApplyToAMicrophoneOnlyRecording() throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_mic")
+        let (recorder, session) = makeRecorder(dir: dir)
+        recorder.micStartsMuted = true
+        try recorder.start(source: .micOnly)
+
+        XCTAssertEqual(session.lastConfiguration?.micStartsMuted, false)
+        XCTAssertFalse(recorder.isMicMuted)
+        XCTAssertTrue(recorder.canMuteMic, "it can still be muted by hand")
+    }
+
+    func testAMicThatFailedToOpenCannotBeMuted() throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_noopen")
+        let (recorder, session) = makeRecorder(dir: dir)
+        session.micOpen = false
+        try recorder.start(source: .forApp(pid: getpid(), noMic: false))
+        XCTAssertFalse(recorder.canMuteMic)
+
+        recorder.setMicMuted(true)
+        XCTAssertFalse(recorder.isMicMuted)
+        XCTAssertTrue(try logStems(in: dir).isEmpty)
+    }
+
+    func testStopHandsOverTheIntervalsAndRemovesTheLog() throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_stop")
+        let (recorder, session) = makeRecorder(dir: dir)
+        try recorder.start(source: .micOnly)
+        recorder.setMicMuted(true)
+        XCTAssertEqual(try logStems(in: dir).count, 1)
+
+        let micURL = try XCTUnwrap(session.lastConfiguration?.micOutputURL)
+        try AudioMixer.saveWAV(samples: [Float](repeating: 0.1, count: 16000), sampleRate: 16000, url: micURL)
+        session.micTrack = micURL
+        session.micMuteIntervals = [MicMuteInterval(start: 0, end: 1)]
+        let recording = try recorder.stop()
+
+        XCTAssertEqual(recording.micMuteIntervals, [MicMuteInterval(start: 0, end: 1)])
+        XCTAssertTrue(try logStems(in: dir).isEmpty)
+        XCTAssertFalse(recorder.canMuteMic)
+    }
+
     /// The setting reaches a recording that `WatchingController` starts, read
     /// when that recording starts rather than when watching was set up.
     func testTheSettingReachesARecordingTheControllerStarts() async throws {
@@ -265,9 +422,47 @@ final class DualSourceRecorderLifecycleTests: XCTestCase {
 
         // This process, so the target is alive for the length of the test.
         controller.startManualRecording(pid: getpid(), appName: "Chrome", title: "Standup")
-        addTeardownBlock { controller.stopManualRecording() }
+        addTeardownBlock { await controller.stopManualRecording() }
         await waitFor(controller.watchLoop?.state == .recording, timeout: .seconds(2))
 
         XCTAssertEqual(session.lastConfiguration?.silentTrackWatchdog, true)
+    }
+
+    func testStartMutedSettingReachesARecordingTheControllerStarts() async throws {
+        let dir = try makeTempDirectory(prefix: "lifecycle_mute_controller")
+        let (recorder, session) = makeRecorder(dir: dir.appendingPathComponent("staging", isDirectory: true))
+        let controller = makeWatchingController(
+            logDir: dir, permissionHealth: .allHealthy,
+            // swiftlint:disable:next trailing_closure
+            makeRecorder: { recorder },
+        )
+        controller.settings.startRecordingsMicMuted = true
+
+        controller.startManualRecording(pid: getpid(), appName: "Chrome", title: "Standup")
+        addTeardownBlock { await controller.stopManualRecording() }
+        await waitFor(controller.watchLoop?.state == .recording, timeout: .seconds(2))
+
+        XCTAssertEqual(session.lastConfiguration?.micStartsMuted, true)
+        XCTAssertTrue(recorder.isMicMuted)
+    }
+}
+
+/// Ticks on the main actor and records the longest gap between two ticks,
+/// which is how long the main thread was held.
+@MainActor
+private final class MainThreadTicker {
+    var ticking = true
+    private(set) var longestGap = Duration.zero
+
+    func run() async {
+        var last = ContinuousClock.now
+        // Measured after each wake, before the stop flag is read, so the gap
+        // the stop caused is counted even when it ends the loop.
+        repeat {
+            try? await Task.sleep(for: .milliseconds(5))
+            let now = ContinuousClock.now
+            longestGap = max(longestGap, now - last)
+            last = now
+        } while ticking
     }
 }

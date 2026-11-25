@@ -1,3 +1,4 @@
+import CoreML
 import FluidAudio
 @testable import MeetingTranscriber
 import XCTest
@@ -103,5 +104,39 @@ final class FluidDiarizerTuningTests: XCTestCase {
         let negative = FluidOfflineProcessor.makeConfig(tuning: .defaults, numSpeakers: -3)
         XCTAssertNil(negative.clustering.minSpeakers)
         XCTAssertNil(negative.clustering.maxSpeakers)
+    }
+
+    func testPreparePassesNonMetalConfigurationToFluidAudio() async throws {
+        var receivedComputeUnits: [MLComputeUnits] = []
+        var processor = FluidOfflineProcessor { _, configuration in
+            receivedComputeUnits.append(configuration.computeUnits)
+        }
+
+        try await processor.prepare(numSpeakers: nil)
+
+        XCTAssertEqual(receivedComputeUnits, [.cpuAndNeuralEngine])
+    }
+
+    /// The shared WeSpeaker loader (Sortformer / Nemotron 3 embeddings and
+    /// the live matcher's first launch) must hand FluidAudio a configuration
+    /// carrying the units it was asked for. Without one FluidAudio picks its
+    /// own default, `.all` outside CI. `.cpuOnly` is no default anywhere, so
+    /// it only arrives if the argument is passed through.
+    func testLoadDiarizerModelsPassesRequestedComputeUnitsToFluidAudio() async {
+        struct LoadNotAttempted: Error {}
+        var receivedComputeUnits: [MLComputeUnits] = []
+        do {
+            _ = try await FluidOfflineProcessor.loadDiarizerModels(computeUnits: .cpuOnly) { configuration in
+                receivedComputeUnits.append(configuration.computeUnits)
+                throw LoadNotAttempted()
+            }
+            XCTFail("the failing load must abort the helper")
+        } catch {
+            XCTAssertTrue(error is LoadNotAttempted, "unexpected error: \(error)")
+        }
+        XCTAssertEqual(
+            receivedComputeUnits, [.cpuOnly],
+            "the helper must pass the requested compute units on to FluidAudio",
+        )
     }
 }

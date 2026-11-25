@@ -60,7 +60,9 @@
                 whisperKitModel: whisperKitModel,
                 whisperLanguage: whisperLanguage,
                 parakeetLanguage: parakeetLanguage,
+                customVocabularyEnabled: customVocabularyEnabled,
                 customVocabularyPath: customVocabularyPath,
+                unloadModelsWhenIdle: unloadModelsWhenIdle,
             )
         }
 
@@ -85,6 +87,8 @@
                 language: protocolLanguage,
                 openAIEndpoint: openAIEndpoint,
                 openAIModel: openAIModel,
+                openAITemperature: openAITemperature,
+                openAITopP: openAITopP,
                 claudeBin: claudeBin,
             )
         }
@@ -96,6 +100,7 @@
                 hasCustomPrompt: FileManager.default.fileExists(atPath: AppPaths.customPromptFile.path),
                 includeFullTranscriptInProtocol: includeFullTranscriptInProtocol,
                 saveRawTranscriptSeparately: saveRawTranscriptSeparately,
+                useAITitleForFilenames: useAITitleForFilenames,
             )
         }
 

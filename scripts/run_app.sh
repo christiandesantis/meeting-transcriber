@@ -20,8 +20,6 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRANSCRIBER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-export TRANSCRIBER_ROOT
-
 SPM_DIR="$TRANSCRIBER_ROOT/app/MeetingTranscriber"
 BUILD_BINARY="$SPM_DIR/.build/release/MeetingTranscriber"
 APP_BUNDLE="$SPM_DIR/.build/MeetingTranscriber-Dev.app"
@@ -86,14 +84,14 @@ if [ -d "$ICONSET_SRC" ]; then
     rm -rf "$(dirname "$ICONSET")"
 fi
 
-# Licences for the third-party code and weights this bundle redistributes. The
-# dev app is not distributed, but scripts/e2e-app.sh deploys it, so keeping it
-# identical to a release bundle is what makes an e2e run evidence about the
-# thing users get. Fatal here, unlike the model below: a missing licence file in
+# Licences for the app itself and the third-party code and weights this bundle
+# redistributes. The dev app is not distributed, but scripts/e2e-app.sh deploys
+# it, so keeping it identical to a release bundle is what makes an e2e run
+# evidence about the thing users get. Fatal here, unlike the model below: a missing licence file in
 # the repo is a repo bug, not an unreachable download.
 # shellcheck source=lib/bundle-licenses.sh
 source "$SCRIPT_DIR/lib/bundle-licenses.sh"
-install_third_party_licenses "$APP_BUNDLE/Contents/Resources"
+install_bundled_licenses "$APP_BUNDLE/Contents/Resources"
 
 # LocalVQE echo-cancellation model, the same resources build_release.sh bundles,
 # so the dev app (which scripts/e2e-app.sh deploys) can exercise the feature.
@@ -155,7 +153,6 @@ if [ "$BUILD_ONLY" = true ]; then
 fi
 
 echo "Starting Meeting Transcriber..."
-echo "  TRANSCRIBER_ROOT=$TRANSCRIBER_ROOT"
 
 # Launch via `open` so macOS LaunchServices properly registers the app
 # (required for notification permissions, etc.).

@@ -44,9 +44,17 @@ class MockRecorder: RecordingProvider {
     /// false, matching the protocol's default, so existing tests are unaffected.
     var micCaptureGaveUp = false
     var appCaptureGaveUp = false
+    /// Whether the microphone's first start timed out (issue #778). Default
+    /// false, matching the protocol's default.
+    var micCaptureStartTimedOut = false
     /// Whether the silent-track watchdog stopped rebuilding (issue #672).
     /// Default false, matching the protocol's default.
     var appSilentTrackWatchdogGaveUp = false
+    /// Whether the app tap carries only a sub-step noise floor (issue #699).
+    /// Default false, matching the protocol's default.
+    var appCarriesOnlyNoiseFloor = false
+    /// Whether the microphone stalled for lack of audio (issues #724, #706).
+    var micCaptureStall = MicCaptureStall()
 
     /// What the capture layer reports about each channel. Defaults describe a
     /// channel delivering signal right now, so a test has to say explicitly
@@ -57,19 +65,45 @@ class MockRecorder: RecordingProvider {
     var micSignalAges: ChannelSignalAges = .deliveringSignalNow
     var appSignalAges: ChannelSignalAges = .deliveringSignalNow
 
+    /// Off by default, like the protocol: a test opts in to a mutable microphone.
+    var canMuteMic = false
+    var isMicMuted = false
+
+    func setMicMuted(_ muted: Bool) {
+        isMicMuted = muted
+    }
+
+    /// Whether `start` was asked to begin muted. Read at the start, so a
+    /// request that comes after it does not count.
+    private var muteFromStart = false
+    private(set) var startedMicMuted = false
+
+    func muteMicFromStart() {
+        muteFromStart = true
+    }
+
     /// Overrides the `recordingStartDate` `stop()` reports. `nil` (default)
     /// yields `Date()` at stop time, matching a real recorder; set it to pin a
     /// specific meeting-start time (e.g. filename-anchoring tests).
     var recordingStartDate: Date?
 
+    /// What `stop()` reports as the mic offset and the mute times.
+    var micDelay: TimeInterval = 0
+    var micMuteIntervals: [MicMuteInterval] = []
+
     func start(source: RecordingSource, micDeviceUID: String?, debugLogging _: Bool) {
         startCalled = true
         capturedSource = source
         capturedMicDeviceUID = micDeviceUID
+        startedMicMuted = muteFromStart
+        if muteFromStart { isMicMuted = true }
     }
 
     func stop() throws -> RecordingResult {
         stopCalled = true
+        // Like `DualSourceRecorder`, whose every stop clears the mute: a caller
+        // that reads the mute after the stop reads false here too.
+        isMicMuted = false
         guard let mix = mixPath else {
             throw RecorderError.noAudioData
         }
@@ -77,8 +111,9 @@ class MockRecorder: RecordingProvider {
             mixPath: mix,
             appPath: appPath,
             micPath: micPath,
-            micDelay: 0,
+            micDelay: micDelay,
             recordingStartDate: recordingStartDate ?? Date(),
+            micMuteIntervals: micMuteIntervals,
         )
     }
 }

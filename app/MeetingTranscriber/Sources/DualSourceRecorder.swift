@@ -18,6 +18,8 @@ struct RecordingResult {
     /// Not derived from `systemUptime` (which doesn't advance during sleep, so
     /// a meeting spanning a sleep would skew the anchor) — this is exact.
     let recordingStartDate: Date
+    /// The stretches of the mic track the user muted, in seconds of that track.
+    var micMuteIntervals: [MicMuteInterval] = []
 }
 
 /// The format `buildRecording` should expect the app track to arrive in, passed
@@ -36,10 +38,8 @@ struct CaptureFormat {
 @MainActor
 @Observable
 class DualSourceRecorder: RecordingProvider {
-    /// The session capturing right now, nil between recordings. Stored as the
-    /// `AudioCapturing` role rather than the concrete `AudioCaptureSession`,
-    /// which is what removes the `@available` gate from this property — the
-    /// reason the storage used to be a type-erased `AnyObject` plus a cast.
+    /// The session capturing right now, nil between recordings. Held as the `AudioCapturing` role,
+    /// which removes the `@available` gate the old type-erased `AnyObject` storage worked around.
     private var captureSession: (any AudioCapturing)?
     private(set) var isRecording = false
     private(set) var recordingStartDate: Date = .distantPast
@@ -69,8 +69,20 @@ class DualSourceRecorder: RecordingProvider {
         captureSession?.micCaptureGaveUp ?? false
     }
 
+    var micCaptureStartTimedOut: Bool {
+        captureSession?.micCaptureStartTimedOut ?? false
+    }
+
     var appSilentTrackWatchdogGaveUp: Bool {
         captureSession?.appSilentTrackWatchdogGaveUp ?? false
+    }
+
+    var appCarriesOnlyNoiseFloor: Bool {
+        captureSession?.appCarriesOnlyNoiseFloor ?? false
+    }
+
+    var micCaptureStall: MicCaptureStall {
+        captureSession?.micCaptureStall ?? MicCaptureStall()
     }
 
     /// Requested app-audio capture format (what the CATap aggregate device is
@@ -131,13 +143,14 @@ class DualSourceRecorder: RecordingProvider {
         recordingsDir: URL,
         minAge: TimeInterval = 30,
         reapMarkersWrittenBefore: Date? = nil,
+        now: Date = Date(),
     ) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: recordingsDir,
             includingPropertiesForKeys: nil,
         ) else { return }
-        let cutoff = Date().addingTimeInterval(-minAge)
+        let cutoff = now.addingTimeInterval(-minAge)
         let markerCutoff = reapMarkersWrittenBefore ?? launchedAt
 
         for file in entries where RecordingFileSuffix.stripAppRaw(from: file.lastPathComponent) != nil {
@@ -146,6 +159,7 @@ class DualSourceRecorder: RecordingProvider {
             try? fm.removeItem(at: file)
             logger.info("Removed orphaned temp file: \(file.lastPathComponent)")
         }
+        removeStaleMixStaging(in: entries, olderThan: cutoff)
 
         // Markers whose recording can never be rescued. A start that threw
         // before capture opened leaves one with no tracks at all; a track that
@@ -297,6 +311,12 @@ class DualSourceRecorder: RecordingProvider {
     /// would otherwise be lost.
     @discardableResult
     nonisolated static func recoverCrashedRecording(stem: String, in recDir: URL) throws -> URL {
+        // A stem another recovery has already mixed is done. Its raw app temp
+        // is gone by then, so what is left looks like a microphone-only
+        // recording, and rebuilding it would rename a microphone-only mix
+        // over the complete one.
+        let existingMix = recDir.appendingPathComponent(stem + RecordingFileSuffix.mix)
+        if FileManager.default.fileExists(atPath: existingMix.path) { return existingMix }
         let temp = crashedTemp(stem: stem, in: recDir)
         let micWav = recDir.appendingPathComponent(stem + RecordingFileSuffix.mic)
         let hasMic = FileManager.default.fileExists(atPath: micWav.path)
@@ -341,14 +361,19 @@ class DualSourceRecorder: RecordingProvider {
     /// gap). The queue-build Task that calls this is fired by a watch-start
     /// immediately before the loop may begin a new recording, so the guard is
     /// load-bearing — not cosmetic.
+    ///
+    /// Not safe to run twice at once on one folder: two overlapping calls
+    /// select the same stem before either has mixed it. Production calls it
+    /// through `StagingRecoveryGate`.
     @discardableResult
     nonisolated static func recoverCrashedRecordings(
         in dir: URL,
         minAge: TimeInterval = 30,
+        now: Date = Date(),
     ) -> Int {
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
-        let cutoff = Date().addingTimeInterval(-minAge)
+        let cutoff = now.addingTimeInterval(-minAge)
         var recovered = 0
         for stem in crashedRecordingStems(in: names) {
             // Freshness is read off the TRACKS, not the marker: the marker is
@@ -387,6 +412,29 @@ class DualSourceRecorder: RecordingProvider {
     /// property rather than another `start` argument so the `RecordingProvider`
     /// doubles, which record nothing, do not all have to learn it.
     var silentTrackWatchdogEnabled = false
+
+    /// Whether the next recording silences its microphone from the first buffer.
+    /// Set before `start(...)`, like the property above. A microphone-only
+    /// recording ignores it: the microphone is the only thing it records.
+    /// The watch loop sets it through `muteMicFromStart()` when it continues a
+    /// muted call.
+    var micStartsMuted = false
+
+    func muteMicFromStart() {
+        micStartsMuted = true
+    }
+
+    private(set) var canMuteMic = false
+    private(set) var isMicMuted = false
+
+    /// Mutes this recording only. The call, and the OS microphone indicator, are
+    /// unaffected. Saved at each toggle so a crash cannot lose the mute times.
+    func setMicMuted(_ muted: Bool) {
+        guard let timeline = captureSession?.setMicMuted(muted), let stem = startTimestamp else { return }
+
+        isMicMuted = timeline.isMuted
+        MicMuteLog.write(timeline, stem: stem, in: recordingsDir)
+    }
 
     /// Start recording whichever channels `source` asks for.
     func start(
@@ -448,6 +496,7 @@ class DualSourceRecorder: RecordingProvider {
                 silentTrackWatchdog: silentTrackWatchdogEnabled,
                 appLiveSink: appLiveSink,
                 micLiveSink: micLiveSink,
+                micStartsMuted: micStartsMuted && source.capturesAppAudio,
             ))
             try session.start()
         } catch {
@@ -460,6 +509,9 @@ class DualSourceRecorder: RecordingProvider {
             throw error
         }
         captureSession = session
+        canMuteMic = session.hasOpenMic
+        isMicMuted = false
+        if micStartsMuted, source.capturesAppAudio { setMicMuted(true) }
 
         isRecording = true
         recordingStartDate = Date()
@@ -467,17 +519,32 @@ class DualSourceRecorder: RecordingProvider {
         logger.info("Recording started: \(source.logDescription), \(self.recordRate) Hz, \(self.appChannels)ch")
     }
 
-    /// Stop recording and produce a mixed WAV. The capture session is the only
-    /// hardware-bound part; everything after `session.stop()` is delegated to
-    /// the testable `buildRecording`.
+    /// Stop recording and produce a mixed WAV: `stopCapture` is the only
+    /// hardware-bound part, `finish` the testable file work.
     func stop() throws -> RecordingResult {
+        try Self.finish(stopCapture())
+    }
+
+    /// `stop()` with `finish` on a detached task: file work that takes
+    /// seconds at the end of a long recording (17 s an hour, debug build).
+    /// `stopCapture` stays on the main actor: the capture objects serialize
+    /// their device and restart callbacks on the main queue, and their stop
+    /// mutates the same state.
+    func stopOffMain() async throws -> RecordingResult {
+        let stopped = try stopCapture()
+        return try await Task.detached(priority: .userInitiated) { try Self.finish(stopped) }.value
+    }
+
+    /// End the capture session and take what the file work needs.
+    private func stopCapture() throws -> StoppedCapture {
         guard isRecording else {
             throw RecorderError.notRecording
         }
 
         isRecording = false
+        canMuteMic = false
+        isMicMuted = false
 
-        // Stop capture session and get result
         guard let session = captureSession else {
             throw RecorderError.noAudioData
         }
@@ -491,23 +558,13 @@ class DualSourceRecorder: RecordingProvider {
         // not the device-facing recordRate/appChannels — is the expected file
         // format; a buildRecording mismatch warning then means the resampler
         // fallback wrote raw native-rate audio.
-        let recording = try Self.buildRecording(
-            from: captureResult,
+        return StoppedCapture(
+            captureResult: captureResult,
             recordingsDir: recordingsDir,
             timestamp: ts,
             recordingStartDate: recordingStartDate,
             format: CaptureFormat(requestedChannels: 1, requestedRate: targetRate, targetRate: targetRate),
         )
-
-        // Dropped only once the mix exists, exactly where `buildRecording`
-        // drops the raw app temp. A stop whose mix write fails has not
-        // finished anything, and the failure (a full disk, say) usually
-        // survives to the next launch: keeping the marker lets that launch
-        // re-mix from the surviving tracks, which is what the app-audio path
-        // has always got from its temp. The mix itself is what stops a
-        // completed recording from being recovered twice.
-        try? FileManager.default.removeItem(at: Self.inProgressMarker(stem: ts, in: recordingsDir))
-        return recording
     }
 
     /// Downmix interleaved multi-channel audio to mono. Passthrough if already
@@ -517,61 +574,11 @@ class DualSourceRecorder: RecordingProvider {
         AudioTapLib.downmixToMono(samples, channels: channels)
     }
 
-    /// Cross-check the device-reported sample rate against raw file size and mic duration.
-    /// Returns the corrected rate (snapped to standard), or the device rate if cross-check
-    /// is unavailable or agrees.
-    nonisolated static func crossCheckAppRate(
-        deviceRate: Int,
-        appRawBytes: Int,
-        appChannels: Int,
-        micDurationSeconds: Double?,
-        micDelay: TimeInterval,
-    ) -> Int {
-        guard let micDuration = micDurationSeconds, micDuration > 3.0 else {
-            return deviceRate
-        }
-        let appDuration = micDuration + micDelay
-        guard appDuration > 3.0 else { return deviceRate }
-
-        guard let inferred = SampleRateQuery.inferRateFromDuration(
-            rawBytes: appRawBytes,
-            bytesPerSample: MemoryLayout<Float>.size,
-            channels: max(appChannels, 1),
-            durationSeconds: appDuration,
-        ) else { return deviceRate }
-
-        let snapped = SampleRateQuery.snapToStandardRate(inferred)
-
-        // Only override if significantly different (> 5% deviation)
-        let deviation = abs(Double(snapped - deviceRate)) / Double(max(deviceRate, 1))
-        if deviation > 0.05 {
-            logger.warning("Rate cross-check: device=\(deviceRate), inferred=\(inferred), snapped=\(snapped) — overriding")
-            return snapped
-        }
-        return deviceRate
-    }
-
     // Pinned Gregorian/POSIX: these stems are the final user-visible filenames
     // in record-only mode, so the year must not localize into a regional calendar.
     private static let timestampFormatter = DateFormatter.filenameStamp("yyyyMMdd_HHmmss")
 
     private static func timestamp() -> String {
         timestampFormatter.string(from: Date())
-    }
-}
-
-enum RecorderError: LocalizedError {
-    case notRecording
-    case noAudioData
-    case unsupportedOS
-    case permissionDenied(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .notRecording: "Not currently recording"
-        case .noAudioData: "No audio data recorded"
-        case .unsupportedOS: "macOS 14.2+ required for audio capture"
-        case let .permissionDenied(reason): "Permission problem: \(reason)"
-        }
     }
 }

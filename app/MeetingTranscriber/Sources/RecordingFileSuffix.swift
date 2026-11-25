@@ -6,6 +6,16 @@ enum RecordingFileSuffix {
     static let app = "_app.wav"
     static let mic = "_mic.wav"
 
+    /// Where the mix is written before it is renamed to `mix`, so a `_mix.wav`
+    /// only ever exists complete. The mix is what says a recording finished
+    /// (crash recovery skips a stem that has one), and a write cut off by an
+    /// exit, a quit whose budget ran out among them, must not leave a
+    /// half-written one saying so. Deliberately not ending in `mix`, so no
+    /// scan for finished mixes picks it up. Each write puts a unique token
+    /// between the stem and this suffix (`writeMixAtomically`), and the
+    /// cleanup after crash recovery removes what a cut-off write left.
+    static let mixStaging = "_mix.partial.wav"
+
     /// Written when a recording starts and removed when it stops, so a
     /// surviving one means the process died mid-recording.
     ///
@@ -20,6 +30,10 @@ enum RecordingFileSuffix {
     /// the output folder and leaves the mic track in staging. Inferring a crash
     /// from that once re-processed 40 recordings on a live archive.
     static let inProgress = "_recording.marker"
+
+    /// The mute times of a recording still in progress, saved at each toggle so
+    /// crash recovery can attach them. See `MicMuteLog`.
+    static let micMuteLog = "_mic_mute.json"
 
     /// Raw float32 app-audio temp file written live during capture (16 kHz
     /// mono, in-IOProc resampled) and consumed by `buildRecording` at `stop()`.

@@ -23,13 +23,31 @@ private struct AnimatedMenuBarIcon: View {
     let recordOnlyOverlay: Bool
     let micSilentOverlay: Bool
     let appSilentOverlay: Bool
+    let micMutedOverlay: Bool
 
     @State private var animationFrame = 0
     // `.default` (not `.common`) so the timer never fires inside the status-bar
-    // menu's tracking loop — see MenuBarIcon.animationRunLoopMode for why.
-    private let iconTimer = Timer.publish(
-        every: 0.4, on: .main, in: MenuBarIcon.animationRunLoopMode,
-    ).autoconnect()
+    // menu's tracking loop — see MenuBarIcon.animationRunLoopMode for why. Built
+    // once per view value, as the plain timer was, and empty for a static
+    // badge so an idle icon schedules no timer at all.
+    private let iconTimer: AnyPublisher<Date, Never>
+
+    init(
+        badge: BadgeKind,
+        permissionOverlay: Bool,
+        recordOnlyOverlay: Bool,
+        micSilentOverlay: Bool,
+        appSilentOverlay: Bool,
+        micMutedOverlay: Bool,
+    ) {
+        self.badge = badge
+        self.permissionOverlay = permissionOverlay
+        self.recordOnlyOverlay = recordOnlyOverlay
+        self.micSilentOverlay = micSilentOverlay
+        self.appSilentOverlay = appSilentOverlay
+        self.micMutedOverlay = micMutedOverlay
+        iconTimer = MenuBarIcon.animationTicks(for: badge)
+    }
 
     var body: some View {
         Image(nsImage: MenuBarIcon.image(
@@ -39,6 +57,7 @@ private struct AnimatedMenuBarIcon: View {
             recordOnlyOverlay: recordOnlyOverlay,
             micSilentOverlay: micSilentOverlay,
             appSilentOverlay: appSilentOverlay,
+            micMutedOverlay: micMutedOverlay,
         ))
         .onReceive(iconTimer) { _ in
             let next = MenuBarIcon.nextFrame(animationFrame, badge: badge)
@@ -75,14 +94,49 @@ private struct WindowAccessor: NSViewRepresentable {
 // Not @main — AppLauncher owns the entry point so a selftest launch can
 // divert before this scene (and AppState with it) is ever constructed.
 struct MeetingTranscriberApp: App {
-    @State private var appState = AppState(notifier: NotificationManager.shared)
+    // Holds every quit open until the pending pipeline snapshot is on disk.
+    // Handed `appState` in `init`, through `AppDelegate.install`. Never read:
+    // declaring the adaptor is what makes SwiftUI install the delegate, and
+    // the analyzer cannot see that use.
+    @NSApplicationDelegateAdaptor(AppDelegate.self)
+    private var appDelegate // swiftlint:disable:this unused_declaration
+    @State private var appState: AppState
     @State private var captionsWindow: LiveCaptionsWindowController?
+    // Launch at Login. Here rather than on `AppState` because only the Settings
+    // scene uses it; building it reads nothing from the system.
+    @State private var loginItem = LoginItemController()
+    // Keeps the progress updater alive for the app's lifetime; it is seeded in
+    // `init` and observes menu tracking on its own, so nothing reads it back and
+    // the analyzer cannot see that use.
+    @State private var menuProgressUpdater: MenuStageProgressUpdater // swiftlint:disable:this unused_declaration
     @Environment(\.openWindow)
     private var openWindow
 
     init() {
+        // Built first, as the property initialiser it replaces was. Handed to
+        // the application delegate here because `init` runs before the run
+        // loop, so every quit request finds it, however early it comes and
+        // whether or not the menu-bar item is ever shown.
+        let state = AppState(pipelineEnvironment: .production, notifier: NotificationManager.shared)
+        #if !APPSTORE
+            PersistentDiagnosticLog.cleanup()
+            // Reap any `log stream` children orphaned by a previous crash/SIGKILL
+            // (re-parented to launchd) so they can't accumulate across launches.
+            // `reapOrphans` is nonisolated, so it runs off the main actor.
+            // The reap is deliberately NOT ordered before the streamer start — an
+            // orphan surviving a few extra ms is benign next to blocking launch,
+            // and the new streamer is matched by parent pid so it's never reaped.
+            Task(priority: .utility) { await PersistentDiagnosticLog.reapOrphans() }
+            state.startPersistentLogStreamer()
+        #endif
+        _appState = State(initialValue: state)
+        AppDelegate.install(state)
+        let updater = MenuStageProgressUpdater()
+        updater.observe { [weak state] in state?.pipelineQueue }
+        _menuProgressUpdater = State(initialValue: updater)
         AppPaths.migrateIfNeeded()
         NotificationManager.shared.setUp()
+        state.pipeline.restorePendingNotionExports()
         // The verdict was taken in `AppLauncher.main()`, before `AppState` was
         // built. It is reported here because this is the first point at which
         // the notification centre is set up (issue #703).
@@ -141,20 +195,27 @@ struct MeetingTranscriberApp: App {
             noMic: appState.settings.noMic,
             manualRecordingPendingOrActive: appState.watching.isManualRecording,
             onStopManualRecording: appState.isManualRecording ? {
-                appState.watching.stopManualRecording()
+                Task { await appState.watching.stopManualRecording() }
             } : nil,
-            onOpenLastProtocol: openLastProtocol,
-            onOpenProtocol: { url in NSWorkspace.shared.open(url) },
+            isMicMuted: appState.isMicMuted,
+            onToggleMicMute: appState.micMuteToggle,
+            micMuteShortcut: appState.micMuteShortcut,
+            onOpenProtocol: openProtocol,
             onOpenProtocolsFolder: openProtocolsFolder,
             onOpenSettings: {
                 bringWindowToFront(id: "settings")
             },
             onNameSpeakers: appState.hasPendingSpeakerNamingJobs ? {
-                bringWindowToFront(id: "speaker-naming")
+                showNamingWindow()
             } : nil,
             onProcessFiles: processAudioFiles,
             onDismissJob: { id in appState.pipelineQueue.removeJob(id: id) },
             onQuit: quit,
+            pendingConsentApp: appState.pendingConsentApp,
+            onAnswerPendingConsent: appState.answerPendingConsent,
+            notionExportEnabled: appState.settings.notionExportEnabled,
+            onGenerateNotesFromTranscripts: generateNotesFromTranscripts,
+            captionsPreparing: appState.liveTranscription.warmup.isPreparing,
         )
     }
 
@@ -171,6 +232,7 @@ struct MeetingTranscriberApp: App {
                 // per-channel overlay inputs.
                 micSilentOverlay: appState.micSilentOverlay,
                 appSilentOverlay: appState.appSilentOverlay,
+                micMutedOverlay: appState.isMicMuted,
             )
         }
         .onReceive(NotificationCenter.default.publisher(for: .autoWatchStart)) { _ in
@@ -179,7 +241,7 @@ struct MeetingTranscriberApp: App {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .showSpeakerNaming)) { _ in
-            bringWindowToFront(id: "speaker-naming")
+            showNamingWindow()
         }
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in
             bringWindowToFront(id: "settings")
@@ -257,6 +319,7 @@ struct MeetingTranscriberApp: App {
                 whisperKitEngine: appState.engines.whisperKit,
                 parakeetEngine: appState.engines.parakeetEngine,
                 updateChecker: appState.updateChecker,
+                loginItem: loginItem,
                 notificationVisibility: appState.permissions.notificationVisibility,
                 // Share the pipeline's actor instance so both writers serialise on
                 // the same `recognition_log.jsonl` file. Fallback only fires in the
@@ -270,6 +333,13 @@ struct MeetingTranscriberApp: App {
                 namingDialogActive: appState.pipeline.queue.pendingSpeakerNaming != nil,
                 pipelineBusy: appState.pipeline.queue.isProcessing,
                 onSpeakerMutate: appState.pipeline.queue.refreshKnownSpeakerNames,
+                // The pipeline's file and the app's notifier, so Known Voices
+                // and enrollment edit the same DB and report through one channel.
+                speakerMatcherFactory: SpeakerMatcher.factory(
+                    dbPath: appState.pipeline.speakersDB, notifier: appState.notifier,
+                ),
+                legacyWhisperModels: appState.engines.legacyWhisperModels,
+                captionWarmup: appState.liveTranscription.warmup,
             )
         }
         .windowResizability(.contentSize)
@@ -297,34 +367,48 @@ struct MeetingTranscriberApp: App {
 
     // MARK: - Speaker Naming Window
 
-    @ViewBuilder private var speakerNamingContent: some View {
-        if let data = appState.pipeline.queue.speakerNamingData(
-            forJobID: appState.selectedNamingJobID,
-        ) {
-            VStack(spacing: 0) {
-                speakerNamingPicker
-                speakerNamingForm(data: data)
+    /// Open the naming window on a pinned job, from the menu and from
+    /// `.showSpeakerNaming` alike.
+    private func showNamingWindow() {
+        appState.pinShownNamingJob()
+        bringWindowToFront(id: "speaker-naming")
+    }
+
+    private var speakerNamingContent: some View {
+        Group {
+            if let data = appState.pipeline.queue.speakerNamingData(
+                forJobID: appState.selectedNamingJobID,
+            ) {
+                VStack(spacing: 0) {
+                    speakerNamingPicker
+                    speakerNamingForm(data: data)
+                }
+            } else {
+                Text("No speaker data available.")
+                    .padding()
             }
-        } else {
-            Text("No speaker data available.")
-                .padding()
+        }
+        // Whatever opened the window or changed what it shows (a restored
+        // window, an RPC answer for the shown job), the selection follows.
+        .onChange(
+            of: appState.pipeline.queue.namingJobID(preferring: appState.selectedNamingJobID),
+            initial: true,
+        ) { _, _ in
+            appState.pinShownNamingJob()
         }
     }
 
     @ViewBuilder private var speakerNamingPicker: some View {
         if appState.pipeline.queue.pendingSpeakerNamingJobs.count > 1 {
-            Picker("Meeting", selection: Binding(
-                get: {
-                    appState.selectedNamingJobID
-                        ?? appState.pipeline.queue.pendingSpeakerNamingJobs.first?.id
-                },
-                set: { appState.selectedNamingJobID = $0 },
-            )) {
-                ForEach(appState.pipeline.queue.pendingSpeakerNamingJobs) { job in
-                    Text(job.meetingTitle).tag(Optional(job.id))
-                }
-            }
-            .pickerStyle(.segmented)
+            NamingJobPicker(
+                jobs: appState.pipeline.queue.pendingSpeakerNamingJobs,
+                selection: Binding(
+                    get: {
+                        appState.pipeline.queue.namingJobID(preferring: appState.selectedNamingJobID)
+                    },
+                    set: { appState.selectedNamingJobID = $0 },
+                ),
+            )
             .padding(.horizontal)
             .padding(.top, 8)
         }
@@ -333,21 +417,27 @@ struct MeetingTranscriberApp: App {
     private func speakerNamingForm(
         data: PipelineQueue.SpeakerNamingData,
     ) -> some View {
-        SpeakerNamingView(
+        SpeakerNamingView.answering(
             data: data,
             knownSpeakerNames: appState.pipeline.queue.knownSpeakerNames,
             currentDiarizerMode: appState.pipeline.queue.usedDiarizerMode(forJobID: data.jobID)
                 ?? appState.settings.diarizerMode,
             pendingJobCount: appState.pipeline.queue.pendingSpeakerNamingJobs.count,
             onDismissRequest: { closeWindow(id: "speaker-naming") },
-            onComplete: { result in
-                appState.pipeline.queue.completeSpeakerNaming(jobID: data.jobID, result: result)
-                if appState.pipeline.queue.pendingSpeakerNamingJobs.isEmpty {
-                    closeWindow(id: "speaker-naming")
-                } else {
-                    appState.selectedNamingJobID =
-                        appState.pipeline.queue.pendingSpeakerNamingJobs.first?.id
+            notice: appState.pipeline.queue.lateRerunFailure(forJobID: data.jobID)?.message,
+            // Labelled: `onDismissRequest` is a closure too, and SwiftFormat
+            // and SwiftLint disagree on trailing syntax for the last of two.
+            // swiftlint:disable:next trailing_closure
+            onAnswer: { result in
+                if let refusal = appState.pipeline.queue.completeSpeakerNaming(jobID: data.jobID, result: result) {
+                    return refusal.message
                 }
+                // The next job awaiting naming, pinned; none left closes the
+                // window.
+                appState.selectedNamingJobID = nil
+                appState.pinShownNamingJob()
+                if appState.selectedNamingJobID == nil { closeWindow(id: "speaker-naming") }
+                return nil
             },
         )
     }
@@ -372,11 +462,20 @@ struct MeetingTranscriberApp: App {
         appState.pipeline.enqueueFiles(panel.urls)
     }
 
-    private func openLastProtocol() {
-        if let job = appState.pipeline.queue.completedJobs.last,
-           let path = job.protocolPath ?? job.transcriptPath {
-            NSWorkspace.shared.open(path)
-        }
+    /// Starts in the notes folder, where the app's transcripts are.
+    private func generateNotesFromTranscripts() {
+        let panel = NSOpenPanel()
+        panel.title = "Select Transcripts"
+        panel.message = "Meeting notes are saved next to each transcript. Transcripts that already have notes are skipped."
+        panel.allowedContentTypes = [.plainText]
+        let filter = TranscriptPanelDelegate()
+        panel.delegate = filter
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = appState.settings.effectiveOutputDir
+        // The panel holds its delegate weakly.
+        guard withExtendedLifetime(filter, { panel.runModal() }) == .OK, !panel.urls.isEmpty else { return }
+        appState.pipeline.generateNotes(fromTranscripts: panel.urls)
     }
 
     private func bringWindowToFront(id: String) {
@@ -404,9 +503,20 @@ struct MeetingTranscriberApp: App {
         NSWorkspace.shared.open(protocols)
     }
 
+    /// Only asks to terminate: stopping watching and finishing a recording
+    /// happen in `AppDelegate`, which every quit path goes through, and this
+    /// one alone used to do them.
     private func quit() {
-        appState.watching.watchLoop?.stop()
+        logger.info("Menu Quit requested")
         NSApplication.shared.terminate(nil)
+    }
+
+    private func openProtocol(_ target: JobOpenTarget) {
+        logger.info("Menu protocol open requested")
+        Task {
+            let opened = await ProtocolOpener().open(target)
+            logger.info("Menu protocol open accepted: \(opened)")
+        }
     }
 
     // MARK: - Pure Helpers (testable without @main)

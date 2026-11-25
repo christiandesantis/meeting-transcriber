@@ -190,6 +190,26 @@ final class PerAppOutputFolderPipelineTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: otherSegments.path))
     }
 
+    /// A cancelled job's recording is moved out of staging into its own
+    /// folder, not the queue's.
+    func testACancelledMappedJobsRecordingMovesIntoItsFolder() async throws {
+        let queue = makeQueue(engine: MockEngine(), diarization: nil)
+        let mix = try createTestAudioFile(in: staging)
+        let job = PipelineJob(
+            meetingTitle: "Work Call", appName: "Google Chrome Beta",
+            mixPath: mix, appPath: nil, micPath: nil, micDelay: 0,
+            assignedOutputDir: mapped,
+        )
+
+        queue.relocateRecordingOfCancelledJob(job)
+        await queue.lastRecordingRelocation?.value
+
+        let moved = try FileManager.default.contentsOfDirectory(atPath: mapped.appendingPathComponent("recordings").path)
+        XCTAssertEqual(moved.count, 1, "\(moved)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mix.path), "the recording stayed in staging")
+        try assertEmpty(main, "nothing of a mapped job goes under the queue's folder")
+    }
+
     // MARK: - Arrangement
 
     private func makeQueue(engine: MockEngine, diarization: MockDiarization?) -> PipelineQueue {

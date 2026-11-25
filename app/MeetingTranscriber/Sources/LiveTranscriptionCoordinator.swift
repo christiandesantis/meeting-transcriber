@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+import os
+
+private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "LiveTranscription")
 
 // MARK: - LiveTranscriptionCoordinator
 
@@ -16,14 +19,21 @@ import Observation
 /// `beginPrewarm(engineProvider:isRecording:)` (called from `AppState.init` after
 /// stored-property init, where the `[weak self]` closures are valid) rather than captured at construction — so the coordinator
 /// never holds an AppState back-reference. `liveEnabled` / `engineSupportsLive` /
-/// `engineLanguage` / `verboseDiagnostics` are settings-backed closures.
+/// `engineLanguage` / `verboseDiagnostics` / `echoCancellationEnabled` are settings-backed closures.
 ///
-/// Not `@Observable` — it exposes no observable state (it drives the controller
-/// + captions imperatively). It still uses `withObservationTracking` internally
-/// to watch the settings keys, which works regardless of this type's annotation.
+/// `@Observable` for `captionsUseEngine`, which the engine lifetime observer
+/// reads, and `warmup`, which Settings and the menu show. It also uses `withObservationTracking` internally to watch the
+/// settings keys.
 @MainActor
+@Observable
 final class LiveTranscriptionCoordinator {
     private var controller: LiveTranscriptionController?
+
+    /// Where the current controller's model warm-up stands; `.idle` without one.
+    private(set) var warmup: LiveCaptionsWarmup = .idle
+
+    /// Whether the prepared controller's captions run on the active engine.
+    private(set) var captionsUseEngine = false
 
     /// Source of the currently-active engine. Set by `beginPrewarm`; nil before
     /// then (so `ensureController` safely no-ops if called early). Captures the
@@ -37,20 +47,21 @@ final class LiveTranscriptionCoordinator {
 
     /// Set when a settings change arrived during a recording and its re-warm was
     /// deferred; applied at the next idle `flush()`.
-    private var needsRewarmWhenIdle = false
+    private(set) var needsRewarmWhenIdle = false
 
     /// True while `attachSinks` is mid-flight (it awaits `prepareForNextRecording()`
     /// between reading the controller and installing its sinks). The deferred
     /// re-warm in `flush()` must not swap the controller out during that window,
     /// or a fast manual stop→restart could leave the new recording feeding an
     /// orphaned controller the coordinator no longer owns.
-    private var attachInFlight = false
+    private(set) var attachInFlight = false
 
     private let captions: LiveCaptionsState
     private let liveEnabled: () -> Bool
     private let engineSupportsLive: () -> Bool
     private let engineLanguage: () -> String?
     private let verboseDiagnostics: () -> Bool
+    private let echoCancellationEnabled: () -> Bool
     private let makeController: ControllerFactory
 
     /// Shared serial warm-up queue. The controller's `prepare()` (the heavy
@@ -58,6 +69,10 @@ final class LiveTranscriptionCoordinator {
     /// concurrently with the ASR engine preload. Defaulted so tests get an
     /// isolated queue.
     private let warmupQueue: ModelWarmupQueue
+
+    /// Shared by every controller this coordinator builds; see
+    /// `LiveTranscriptionController.downloadStreamingModels()`.
+    private let modelDownloads = KeyedSerialGate()
 
     /// Builds the streaming controller for the (optional) active engine. The
     /// engine is nil when a language-driven streaming backend (German/English)
@@ -77,6 +92,7 @@ final class LiveTranscriptionCoordinator {
         engineSupportsLive: @escaping () -> Bool,
         engineLanguage: @escaping () -> String? = { nil },
         verboseDiagnostics: @escaping () -> Bool,
+        echoCancellationEnabled: @escaping () -> Bool = { false },
         makeController: @escaping ControllerFactory = LiveTranscriptionCoordinator.makeDefaultController,
         warmupQueue: ModelWarmupQueue = ModelWarmupQueue(),
     ) {
@@ -85,11 +101,15 @@ final class LiveTranscriptionCoordinator {
         self.engineSupportsLive = engineSupportsLive
         self.engineLanguage = engineLanguage
         self.verboseDiagnostics = verboseDiagnostics
+        self.echoCancellationEnabled = echoCancellationEnabled
         self.makeController = makeController
         self.warmupQueue = warmupQueue
     }
 
-    private static func makeDefaultController(
+    /// The real controller, whose `prepare()` loads the speaker-matcher, VAD and
+    /// streaming-ASR CoreML models. Not private: `AppState.init` defaults its
+    /// `liveControllerFactory` to it.
+    static func makeDefaultController(
         engine: (any StreamingTranscribingEngine)?,
         captions: LiveCaptionsState,
         engineLanguage: String?,
@@ -99,13 +119,15 @@ final class LiveTranscriptionCoordinator {
         // closure-typed trailing-eligible params (`eouSessionFactory` +
         // `verboseDiagnostics`) a bare trailing closure is ambiguous, so name it.
         let verbose: () -> Bool = { verboseDiagnostics() }
-        return LiveTranscriptionController(
+        let controller = LiveTranscriptionController(
             engine: engine,
             vad: FluidVAD(threshold: 0.5),
             captions: captions,
             engineLanguage: engineLanguage,
             verboseDiagnostics: verbose,
         )
+        controller.streamingModelDownload = LiveTranscriptionController.downloadStreamingModel
+        return controller
     }
 
     /// Whether live captions are eligible to run at all, per the shared gate.
@@ -176,7 +198,7 @@ final class LiveTranscriptionCoordinator {
         // would orphan the one it is binding (fast manual stop→restart).
         if needsRewarmWhenIdle, !isRecording(), !attachInFlight {
             needsRewarmWhenIdle = false
-            controller = nil
+            dropController()
             prewarmIfEligible()
         }
     }
@@ -211,15 +233,38 @@ final class LiveTranscriptionCoordinator {
     /// controller (so no CoreML recompile lands mid-recording and the overlay
     /// stays live on the current engine), re-arm the observer, and apply the
     /// rebuild at the next idle `flush()`. Either way the engine change takes
-    /// effect on the next recording.
+    /// effect on the next recording. An `attachSinks` in flight counts as a
+    /// recording: a manual start builds its recorder before the state says so,
+    /// and dropping the controller it is binding would cancel its warm-up.
     private func handleSettingsChange() {
-        guard !isRecording() else {
+        guard !isRecording(), !attachInFlight else {
             needsRewarmWhenIdle = true
             observeSettings()
             return
         }
-        controller = nil
+        dropController()
         prewarmAndObserve()
+    }
+
+    /// Drop the controller and stop the rest of its warm-up, so a stale one does
+    /// not hold the warm-up queue ahead of its successor's.
+    private func dropController() {
+        controller?.cancelPrepare()
+        controller = nil
+        captionsUseEngine = false
+        warmup = .idle
+    }
+
+    /// The `warmup` failure of a warm-up still loading at the queue's stall deadline,
+    /// which counts from the load's start, not from the build like the Settings timer.
+    static func stalledFailure(after deadline: Duration) -> String {
+        let seconds = deadline.components.seconds
+        let span = switch seconds {
+        case 60: "1 minute"
+        case let whole where whole > 60 && whole.isMultiple(of: 60): "\(whole / 60) minutes"
+        default: "\(seconds) seconds"
+        }
+        return "Loading the caption models has not finished \(span) after it started."
     }
 
     private func prewarmIfEligible() {
@@ -251,11 +296,54 @@ final class LiveTranscriptionCoordinator {
         // Re-transcribe needs a streaming engine; the streaming backends don't.
         guard strategy != .reTranscribe || streamingEngine != nil else { return nil }
         let controller = makeController(streamingEngine, captions, language, verboseDiagnostics)
+        controller.modelDownloads = modelDownloads
+        controller.echoCancellationEnabled = echoCancellationEnabled
         self.controller = controller
+        let started = Date()
+        warmup = .preparing(since: started)
+        logger.notice("Live caption warm-up started (language: \(language ?? "auto", privacy: .public))")
+        // Before prepare(), so a release cannot land while its engine load runs.
+        captionsUseEngine = strategy == .reTranscribe
+        // The fallback after a failed streaming load reaches the engine load later.
+        controller.willLoadEngine = { [weak self, weak controller] in
+            if let self, self.controller === controller { self.captionsUseEngine = true }
+        }
         // Route `prepare()` through the shared warm-up queue (see `warmupQueue`).
-        // Bind it locally so the fire-and-forget Task doesn't capture `self`.
+        // Bind it locally; the fire-and-forget Task holds `self` only weakly.
         let queue = warmupQueue
-        Task { @MainActor in await queue.run { await controller.prepare() } }
+        // Names the step a load that has not returned is in; the queue logs the stall itself.
+        // The load keeps running, and its outcome still replaces the failure when it returns.
+        let stalledFailure = Self.stalledFailure(after: queue.stallDeadline)
+        let reportStall: @MainActor () -> Void = { [weak self, weak controller] in
+            guard let controller else { return }
+            logger.warning(
+                "Live caption warm-up stalled in step: \(controller.prepareStep ?? "none, between steps", privacy: .public)",
+            )
+            // The queue no longer waits for this load, so a rebuilt controller does not
+            // either: the retry hint under `.failed` is now true.
+            guard let self, self.controller === controller else { return }
+            self.warmup = .failed(stalledFailure)
+        }
+        Task { @MainActor [weak self] in
+            // Before the queue, so its stall deadline does not count a first download.
+            await controller.downloadStreamingModels()
+            await queue.run("caption warm-up", onStall: reportStall) {
+                await controller.prepare()
+                // Counted from the build, so the download and the wait in the queue are included.
+                let seconds = Date().timeIntervalSince(started)
+                guard let self, self.controller === controller else {
+                    logger.notice("Live caption warm-up dropped after \(seconds, format: .fixed(precision: 1), privacy: .public) s")
+                    return
+                }
+                self.captionsUseEngine = controller.usesTranscriptionEngine
+                // A CoreML load error can carry a model path under the home directory.
+                self.warmup = controller.prepareFailure
+                    .map { .failed(AppPaths.abbreviatingHome(in: $0, home: NSHomeDirectory())) } ?? .ready
+                logger.notice(
+                    "Live caption warm-up \(self.warmup.name, privacy: .public) after \(seconds, format: .fixed(precision: 1), privacy: .public) s",
+                )
+            }
+        }
         return controller
     }
 }

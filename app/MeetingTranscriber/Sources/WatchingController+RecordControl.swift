@@ -57,10 +57,10 @@ extension WatchingController {
         switch action {
         case .start: return await applyRecordStart()
 
-        case .stop: return applyRecordStop()
+        case .stop: return await applyRecordStop()
 
         case .toggle:
-            return isRecordingMicrophoneOnly ? applyRecordStop() : await applyRecordStart()
+            return isRecordingMicrophoneOnly ? await applyRecordStop() : await applyRecordStart()
         }
     }
 
@@ -110,11 +110,11 @@ extension WatchingController {
     /// holds and there is nothing to refuse. Same asymmetry `stopWatching`
     /// documents, and the same reason — a stop that reached across and ended
     /// somebody else's meeting would be far worse than a 200 that did nothing.
-    private func applyRecordStop() -> RecordControlOutcome {
+    private func applyRecordStop() async -> RecordControlOutcome {
         guard isRecordingMicrophoneOnly else { return .unchanged }
         let loop = watchLoop
         let errorBeforeStop = loop?.lastError
-        stopManualRecording()
+        await stopManualRecording()
         if isRecordingMicrophoneOnly { return .failed }
         // A stop whose recorder threw is not a success, however idle the loop
         // looks afterwards: `WatchLoop.stopManualRecording` skips the enqueue on
@@ -125,5 +125,16 @@ extension WatchingController {
             return .failed
         }
         return .changed
+    }
+
+    /// Whether a manual start may take over the loop it found, given what that
+    /// loop is doing. False while it is recording: taking it over stops it, and
+    /// a recording in progress is not something a later start may end.
+    ///
+    /// A pure function over the phase rather than an inline comparison, because
+    /// the guard it backs only fires in a race that no test can schedule
+    /// reliably — this is the layer that can be pinned.
+    static func mayTakeOverLoop(in state: WatchLoop.State) -> Bool {
+        state != .recording
     }
 }
