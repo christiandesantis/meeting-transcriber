@@ -100,36 +100,7 @@ struct OutputSettingsView: View {
 
     var body: some View {
         Form {
-            // Output folder applies to record-only AND protocol mode, so this
-            // section deliberately sits outside the .recordOnlyDisabled block.
-            Section("Output Folder") {
-                HStack {
-                    Text("Output Folder")
-                    Spacer()
-                    Text(outputDirDisplay)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                HStack {
-                    Button("Choose\u{2026}") {
-                        chooseOutputFolder()
-                    }
-
-                    Button("Reset") {
-                        settings.clearCustomOutputDir()
-                    }
-                    .disabled(settings.customOutputDirBookmark == nil)
-
-                    Spacer()
-                }
-            }
-            .accessibilityIdentifier(A11yID.outputFolderSection)
-
-            #if !APPSTORE
-                appFolderSection
-            #endif
+            outputFolderSections
 
             NotionExportSettingsView(settings: settings)
 
@@ -162,6 +133,42 @@ struct OutputSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             apiKeyDrafts.commitPending(to: settings)
         }
+    }
+
+    /// The main output folder and, outside the App Store build, the per-app
+    /// folders below it. Out of `body` to keep its closure within the length cap.
+    @ViewBuilder
+    private var outputFolderSections: some View { // swiftlint:disable:this attributes
+        // Output folder applies to record-only AND protocol mode, so this
+        // section deliberately sits outside the .recordOnlyDisabled block.
+        Section("Output Folder") {
+            HStack {
+                Text("Output Folder")
+                Spacer()
+                Text(outputDirDisplay)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            HStack {
+                Button("Choose\u{2026}") {
+                    chooseOutputFolder()
+                }
+
+                Button("Reset") {
+                    settings.clearCustomOutputDir()
+                }
+                .disabled(settings.customOutputDirBookmark == nil)
+
+                Spacer()
+            }
+        }
+        .accessibilityIdentifier(A11yID.outputFolderSection)
+
+        #if !APPSTORE
+            appFolderSection
+        #endif
     }
 
     private var meetingNotesSection: some View {

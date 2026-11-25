@@ -265,9 +265,7 @@ final class WatchingController {
                     // Decided per write, not per poll: the loop calls this once
                     // when a record-only recording is persisted, so a folder that
                     // cannot be reached is reported there (see the resolver).
-                    recordOnlyDestination: { [pipeline] in
-                        .production(parent: pipeline.outputDirectory.resolve())
-                    },
+                    recordOnlyDestination: { [pipeline] in .production(parent: pipeline.outputDirectory.resolve()) },
                     outputFolders: { [settings] in settings.outputFolderByApp },
                     outputFolderConflict: { [settings] in settings.outputFolderConflict },
                     notifier: notifier,
@@ -490,9 +488,7 @@ final class WatchingController {
             recordOnly: { [settings] in settings.recordOnly },
             // Same seam as the auto-watch loop above: per write, through the
             // shared resolver.
-            recordOnlyDestination: { [pipeline] in
-                .production(parent: pipeline.outputDirectory.resolve())
-            },
+            recordOnlyDestination: { [pipeline] in .production(parent: pipeline.outputDirectory.resolve()) },
             outputFolders: { [settings] in settings.outputFolderByApp },
             outputFolderConflict: { [settings] in settings.outputFolderConflict },
             notifier: notifier,
