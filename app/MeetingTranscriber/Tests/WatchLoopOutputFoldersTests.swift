@@ -5,7 +5,7 @@ import XCTest
 /// assigned when it is handed on, record-only landing in it, and the refusal
 /// to record while the main output folder overlaps one of them.
 @MainActor
-final class WatchLoopOutputFoldersTests: XCTestCase { // swiftlint:disable:this balanced_xctest_lifecycle
+final class WatchLoopOutputFoldersTests: XCTestCase {
     private static let browser = "Microsoft Teams" // the app name a detected Teams call is carried under
 
     private func makeLoop(
@@ -51,7 +51,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase { // swiftlint:disable:this 
 
     // MARK: - Routing
 
-    func testAMappedAppsJobIsAssignedItsFolder() throws {
+    func testAMappedAppsJobIsAssignedItsFolder() {
         let mapped = URL(fileURLWithPath: "/tmp/work-meetings", isDirectory: true)
         let loop = makeLoop(folders: AppOutputFolders(folders: [Self.browser: mapped]))
 

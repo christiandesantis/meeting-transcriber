@@ -469,12 +469,12 @@ class PowerAssertionDetector: MeetingDetecting {
     ) -> String? {
         switch pattern.identity {
         case .shared:
-            return matchers[pattern.appName]?.selectWindowTitle(from: windowListProvider())
+            matchers[pattern.appName]?.selectWindowTitle(from: windowListProvider())
 
         case .perProcess:
             // Only a title that looks like a call: a browser window carries
             // whatever tab is open, which must not reach file names or prompts.
-            return MeetingTitleMatcher(pattern: meetingPattern).selectBrowserCallTitle(from: windowListProvider())
+            MeetingTitleMatcher(pattern: meetingPattern).selectBrowserCallTitle(from: windowListProvider())
         }
     }
 
