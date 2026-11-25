@@ -191,6 +191,17 @@ enum A11yID {
         "play-\(speakerLabel)"
     }
 
+    /// Per-speaker "next sample" button beside Play (`next-sample-<label>`).
+    static func nextSample(_ speakerLabel: String) -> String {
+        "next-sample-\(speakerLabel)"
+    }
+
+    /// The current sample's length and place among the candidates, beside the
+    /// two buttons (`sample-info-<label>`).
+    static func sampleInfo(_ speakerLabel: String) -> String {
+        "sample-info-\(speakerLabel)"
+    }
+
     /// Prefix for the per-participant name chips (`participant-name-<name>`);
     /// the name is appended at the call site.
     static let participantNamePrefix = "participant-name-"

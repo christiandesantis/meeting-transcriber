@@ -177,6 +177,8 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
     /// the last answer. See `NamingAnswerGate`.
     @State private var answerGate = NamingAnswerGate()
     @State private var player: AVAudioPlayer?
+    /// Each speaker's sample candidates, worked out once per presentation.
+    @State private var candidateCache = SampleCandidateCache()
     @State private var playingLabel: String?
     @State private var rerunMode: DiarizerMode = .offline
     @State private var rerunCount: Int = 2
@@ -426,9 +428,7 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
     private func speakerRow(
         speaker: (label: String, autoName: String?, speakingTime: Double),
     ) -> some View {
-        // swiftlint:disable:next closure_body_length
         GroupBox {
-            // swiftlint:disable:next closure_body_length
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(speaker.label)
@@ -436,19 +436,11 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                         .fontWeight(.medium)
 
                     if data.audioPath != nil {
-                        Button {
-                            playSpeakerSnippet(label: speaker.label)
-                        } label: {
-                            Image(systemName: playingLabel == speaker.label
-                                ? "stop.circle.fill" : "play.circle.fill")
-                                .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier(A11yID.play(speaker.label))
+                        sampleControls(label: speaker.label)
                     }
 
                     Spacer()
-                    Text("(\(formattedTime(speaker.speakingTime)))")
+                    Text("\(formattedTime(speaker.speakingTime)) total")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -478,6 +470,39 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                 suggestionChips(for: speaker, query: typed)
             }
             .padding(4)
+        }
+    }
+
+    /// Play, "next sample" and what is being played: its own length and its
+    /// place among the speaker's candidates, set apart from the total beside it.
+    @ViewBuilder
+    private func sampleControls(label: String) -> some View {
+        let current = currentSample(label: label)
+        Button {
+            playSpeakerSnippet(label: label)
+        } label: {
+            Image(systemName: playingLabel == label ? "stop.circle.fill" : "play.circle.fill")
+                .foregroundStyle(.blue)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(A11yID.play(label))
+
+        Button {
+            playNextSample(label: label)
+        } label: {
+            Image(systemName: "forward.circle")
+                .foregroundStyle(.blue)
+        }
+        .buttonStyle(.plain)
+        .disabled((current?.count ?? 0) < 2)
+        .help("Play another sample")
+        .accessibilityIdentifier(A11yID.nextSample(label))
+
+        if let current {
+            Text(Self.sampleInfo(for: current.segment, index: current.index, count: current.count))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier(A11yID.sampleInfo(label))
         }
     }
 
@@ -602,20 +627,38 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
             .accessibilityIdentifier(identifier)
     }
 
-    /// Play the longest temporally-pure segment of a speaker from the audio file.
+    /// Play or stop `label`'s current sample candidate.
     private func playSpeakerSnippet(label: String) {
-        // Stop if already playing this speaker
         if playingLabel == label {
             player?.stop()
             player = nil
             playingLabel = nil
             return
         }
+        playCurrentSample(label: label)
+    }
 
-        // Pick the longest pure segment to avoid cross-voice contamination,
-        // and play it from the speaker's own track where there is one.
-        guard let chosen = Self.selectSampleSegment(for: label, in: data.segments) else { return }
-        let sources = data.sampleSources(for: chosen)
+    /// Move `label` on to its next sample candidate, wrapping round, and play it.
+    private func playNextSample(label: String) {
+        let count = candidateCache.candidates(for: label, in: data).count
+        guard count > 1 else { return }
+        rows.sampleIndex[label] = Self.nextSampleIndex(after: rows.sampleIndex[label] ?? 0, count: count)
+        playCurrentSample(label: label)
+    }
+
+    /// The candidate Play plays for `label` now, or nil when it has none.
+    private func currentSample(label: String) -> (segment: PipelineQueue.SpeakerNamingData.Segment, index: Int, count: Int)? {
+        let candidates = candidateCache.candidates(for: label, in: data)
+        guard !candidates.isEmpty else { return nil }
+        let index = min(rows.sampleIndex[label] ?? 0, candidates.count - 1)
+        return (candidates[index], index, candidates.count)
+    }
+
+    /// Play `label`'s current candidate, capped at `maxSampleSeconds`, from
+    /// the speaker's own track where there is one.
+    private func playCurrentSample(label: String) {
+        guard let current = currentSample(label: label) else { return }
+        let sources = data.sampleSources(for: Self.playbackSpan(of: current.segment))
         let loadSample = sampleLoader
 
         // Perform file I/O off the main thread
@@ -633,10 +676,10 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                     playingLabel = label
                 }
 
-                // Reset icon when done
+                // Reset icon when done, unless another sample has started since.
                 try? await Task.sleep(for: .seconds(duration + 0.1))
                 await MainActor.run {
-                    if playingLabel == label {
+                    if playingLabel == label, player === newPlayer {
                         playingLabel = nil
                     }
                 }
@@ -644,19 +687,6 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
                 // Silently fail — playback is best-effort
             }
         }
-    }
-
-    /// Picks the longest-duration segment attributed to `label` so the
-    /// playback snippet is the speaker's most representative sample.
-    /// Returns nil when the speaker has no segments. Pure for testability —
-    /// `playSpeakerSnippet`'s detached I/O path stays unchanged.
-    static func longestSegment(
-        forSpeaker label: String,
-        in segments: [PipelineQueue.SpeakerNamingData.Segment],
-    ) -> PipelineQueue.SpeakerNamingData.Segment? {
-        segments
-            .filter { $0.speaker == label }
-            .max { ($0.end - $0.start) < ($1.end - $1.start) }
     }
 
     private func confirm() {
@@ -690,9 +720,9 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
         return startSample ..< endSample
     }
 
-    /// Picks the longest temporally-pure segment for `label`, falling back to
-    /// `longestSegment` when no pure segment ≥ `minDuration` exists. A segment is
-    /// "pure" when no other speaker has any segment overlapping the window
+    /// The sample Play starts with: the first of `sampleCandidates`, so the
+    /// longest temporally-pure turn of `label`, else its longest turn. A turn
+    /// is "pure" when no other speaker has any segment overlapping the window
     /// `[c.start - purityWindow, c.end + purityWindow]`. Used to avoid
     /// cross-voice contamination in the speaker-naming dialog playback.
     static func selectSampleSegment(
@@ -701,16 +731,7 @@ struct SpeakerNamingView: View { // swiftlint:disable:this type_body_length
         minDuration: TimeInterval = 1.5,
         purityWindow: TimeInterval = 0.5,
     ) -> PipelineQueue.SpeakerNamingData.Segment? {
-        let own = segments.filter { $0.speaker == label }
-        guard !own.isEmpty else { return nil }
-        let others = segments.filter { $0.speaker != label }
-        let pure = own
-            .filter { c in
-                (c.end - c.start) >= minDuration
-                    && !others.contains { $0.start < c.end + purityWindow && c.start - purityWindow < $0.end }
-            }
-            .max { ($0.end - $0.start) < ($1.end - $1.start) }
-        return pure ?? longestSegment(forSpeaker: label, in: segments)
+        sampleCandidates(for: label, in: segments, minDuration: minDuration, purityWindow: purityWindow).first
     }
 
     /// Computes the initial text field contents from the speaker auto-name

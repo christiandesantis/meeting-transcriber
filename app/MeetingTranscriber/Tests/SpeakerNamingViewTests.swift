@@ -110,10 +110,11 @@ final class SpeakerNamingViewTests: XCTestCase { // swiftlint:disable:this type_
             speakingTimes: ["SPEAKER_00": 125.0],
         )) { _ in }
         let body = try sut.inspect()
-        // formattedTime(125) = "2:05"
+        // formattedTime(125) = "2:05", labelled as the total so it is not
+        // read as the length of the sample Play plays.
         let texts = body.findAll(ViewType.Text.self)
-        let found = texts.contains { (try? $0.string())?.contains("2:05") == true }
-        XCTAssertTrue(found, "Speaking time '2:05' should appear")
+        let found = texts.contains { (try? $0.string()) == "2:05 total" }
+        XCTAssertTrue(found, "Speaking time '2:05 total' should appear")
     }
 
     /// A mapped name that differs from the label is an auto name the dialog
@@ -469,37 +470,6 @@ final class SpeakerNamingViewTests: XCTestCase { // swiftlint:disable:this type_
         // the search threw.
         let field = try sut.inspect().find(viewWithAccessibilityIdentifier: A11yID.speakerName("SPEAKER_00"))
         XCTAssertNoThrow(try field.textField(), "the control carrying A11yID.speakerName(label) must be the text field")
-    }
-
-    // MARK: - longestSegment (pure)
-
-    /// `playSpeakerSnippet` plays the longest segment per speaker so the
-    /// preview is the speaker's most representative utterance. Extracted as
-    /// a static helper; the detached audio-load path is integration-only.
-    private func segment(speaker: String, start: Double, end: Double)
-        -> PipelineQueue.SpeakerNamingData.Segment {
-        PipelineQueue.SpeakerNamingData.Segment(start: start, end: end, speaker: speaker)
-    }
-
-    func testLongestSegmentPicksLongestForLabel() throws {
-        let segs = [
-            segment(speaker: "A", start: 0, end: 1),
-            segment(speaker: "A", start: 5, end: 10), // 5s — longest A
-            segment(speaker: "A", start: 12, end: 13),
-            segment(speaker: "B", start: 0, end: 100), // huge B, must be ignored
-        ]
-        let picked = try XCTUnwrap(SpeakerNamingView.longestSegment(forSpeaker: "A", in: segs))
-        XCTAssertEqual(picked.start, 5)
-        XCTAssertEqual(picked.end, 10)
-    }
-
-    func testLongestSegmentReturnsNilForUnknownSpeaker() {
-        let segs = [segment(speaker: "A", start: 0, end: 1)]
-        XCTAssertNil(SpeakerNamingView.longestSegment(forSpeaker: "C", in: segs))
-    }
-
-    func testLongestSegmentReturnsNilForEmptyInput() {
-        XCTAssertNil(SpeakerNamingView.longestSegment(forSpeaker: "A", in: []))
     }
 
     // MARK: - Keyboard grace period

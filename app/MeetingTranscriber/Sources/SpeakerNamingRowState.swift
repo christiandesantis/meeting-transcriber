@@ -22,6 +22,9 @@ final class SpeakerNamingRowState {
     /// Labels of the rows showing the full known-names list instead of the
     /// top-N ranked subset.
     var knownExpanded: Set<String> = []
+    /// Which of each row's sample candidates Play plays; a missing label is
+    /// the first (`SpeakerNamingView.sampleCandidates`).
+    var sampleIndex: [String: Int] = [:]
 
     init(names: [String: String]) {
         self.names = names
@@ -35,12 +38,14 @@ final class SpeakerNamingRowState {
     /// the object would leave the fields on screen writing into the one nobody
     /// reads any more.
     ///
-    /// One call because the two halves must move together. Expansion is
+    /// One call because the parts must move together. Expansion is
     /// collapsed rather than carried over: the next presentation's known-names
     /// list is a different list, so a row left expanded would be expanded
-    /// against names the user never chose to see.
+    /// against names the user never chose to see. The sample index goes back
+    /// to the first for the same reason: a re-run's candidates are new ones.
     func reset(names: [String: String]) {
         self.names = names
         knownExpanded.removeAll()
+        sampleIndex.removeAll()
     }
 }

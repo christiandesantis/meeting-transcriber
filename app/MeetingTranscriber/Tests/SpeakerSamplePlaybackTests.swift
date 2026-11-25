@@ -50,6 +50,63 @@ final class SpeakerSamplePlaybackTests: XCTestCase {
         ])
     }
 
+    /// Next moves on to the second candidate and asks for it, capped, from
+    /// the speaker's own track first; the row then says which one it is.
+    func testNextAsksForTheNextCandidateAndTheRowSaysWhichItIs() async throws {
+        let mix = URL(fileURLWithPath: "/rec/standup_16k.wav")
+        let app = URL(fileURLWithPath: "/rec/standup_app_16k.wav")
+        let mic = URL(fileURLWithPath: "/rec/standup_mic_16k.wav")
+        var data = namingData(mix: mix, app: app, mic: mic)
+        data = NamingData(
+            jobID: data.jobID, meetingTitle: data.meetingTitle, mapping: data.mapping,
+            speakingTimes: data.speakingTimes, embeddings: data.embeddings, audioPath: mix,
+            segments: [
+                .init(start: 10, end: 14, speaker: "M_SPEAKER_1"), // 4 s
+                .init(start: 40, end: 80, speaker: "M_SPEAKER_1"), // 40 s, played as 20 s
+            ],
+            participants: [], isDualSource: true,
+        )
+        data.tracks = .init(app: app, mic: mic, micDelay: micDelay)
+        let asked = OSAllocatedUnfairLock<[Source]>(initialState: [])
+        let loaded = expectation(description: "the button asked for a sample")
+        var sut = SpeakerNamingView(data: data, gracePeriod: 0) { _ in }
+        sut.sampleLoader = { sources in
+            asked.withLock { $0 = sources }
+            loaded.fulfill()
+            return nil
+        }
+        let info = A11yID.sampleInfo("M_SPEAKER_1")
+        XCTAssertEqual(try sut.inspect().find(viewWithAccessibilityIdentifier: info).text().string(), "20s, 1 of 2")
+
+        try sut.inspect().find(viewWithAccessibilityIdentifier: A11yID.nextSample("M_SPEAKER_1")).button().tap()
+        await fulfillment(of: [loaded], timeout: 5)
+
+        XCTAssertEqual(asked.withLock { $0 }, [
+            Source(url: mic, start: 10 - micDelay, end: 14 - micDelay),
+            Source(url: mix, start: 10, end: 14),
+        ])
+        XCTAssertEqual(try sut.inspect().find(viewWithAccessibilityIdentifier: info).text().string(), "4s, 2 of 2")
+    }
+
+    func testNextIsOffForASpeakerWithOneCandidate() throws {
+        let sut = SpeakerNamingView(
+            data: namingData(
+                mix: URL(fileURLWithPath: "/rec/m.wav"),
+                app: URL(fileURLWithPath: "/rec/a.wav"),
+                mic: URL(fileURLWithPath: "/rec/mi.wav"),
+            ),
+            gracePeriod: 0,
+        ) { _ in }
+
+        let next = try sut.inspect().find(viewWithAccessibilityIdentifier: A11yID.nextSample("M_SPEAKER_1")).button()
+
+        XCTAssertTrue(next.isDisabled())
+        XCTAssertEqual(
+            try sut.inspect().find(viewWithAccessibilityIdentifier: A11yID.sampleInfo("M_SPEAKER_1")).text().string(),
+            "4s, 1 of 1",
+        )
+    }
+
     // MARK: - Reading the files
 
     private struct Recording {
