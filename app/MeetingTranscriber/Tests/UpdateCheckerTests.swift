@@ -261,6 +261,39 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertNil(checker.lastError)
     }
 
+    // MARK: - Dev build
+
+    func testOnlyABundleIDEndingInDevIsTheDevBuild() {
+        XCTAssertTrue(UpdateChecker.isDevBuild(bundleIdentifier: "app.meetingtranscriber.dev"))
+        XCTAssertFalse(UpdateChecker.isDevBuild(bundleIdentifier: "app.meetingtranscriber"))
+        XCTAssertFalse(UpdateChecker.isDevBuild(bundleIdentifier: "app.meetingtranscriber.devtools"))
+        XCTAssertFalse(UpdateChecker.isDevBuild(bundleIdentifier: nil))
+    }
+
+    func testTheDevBuildNeverAsksGitHub() async {
+        let provider = MockUpdateProvider()
+        provider.latestReleaseResult = .success(makeRelease(tag: "v99.0.0"))
+        let checker = UpdateChecker(provider: provider, bundleIdentifier: "app.meetingtranscriber.dev")
+
+        checker.checkNow()
+        await yieldUntil { !checker.isChecking }
+
+        XCTAssertEqual(provider.latestReleaseCallCount, 0)
+        XCTAssertNil(checker.availableUpdate)
+        XCTAssertEqual(checker.lastError, UpdateChecker.devBuildNotice, "Check Now says why nothing happened")
+    }
+
+    func testAReleaseBuildStillChecks() async {
+        let provider = MockUpdateProvider()
+        provider.latestReleaseResult = .success(makeRelease(tag: "v99.0.0"))
+        let checker = UpdateChecker(provider: provider, bundleIdentifier: "app.meetingtranscriber")
+
+        checker.checkNow()
+        await yieldUntil { !checker.isChecking }
+
+        XCTAssertEqual(provider.latestReleaseCallCount, 1)
+    }
+
     // MARK: - Helpers
 
     private func makeRelease(

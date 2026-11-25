@@ -116,6 +116,13 @@ final class UpdateChecker {
     /// The Homebrew cask this app was installed from, `nil` for a DMG install.
     let installedCask: String?
 
+    /// The dev build (`scripts/run_app.sh`) reports the VERSION file, so every
+    /// newer release would be offered, and installing one puts a separate
+    /// release app beside it rather than updating it. It never checks.
+    let isDevBuild: Bool
+
+    static let devBuildNotice = "Update checks are off in the dev build"
+
     private let provider: any UpdateProviding
     private let currentVersion: (Int, Int, Int)
     private var checkTask: Task<Void, Never>?
@@ -124,9 +131,14 @@ final class UpdateChecker {
     /// `installedCask` defaults to `nil` rather than probing the Caskroom, so a
     /// test never depends on whether the machine running it has the cask
     /// installed. The app passes `UpdateInstallRoute.installedCask()`.
-    init(provider: any UpdateProviding = GitHubReleaseProvider(), installedCask: String? = nil) {
+    init(
+        provider: any UpdateProviding = GitHubReleaseProvider(),
+        installedCask: String? = nil,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier,
+    ) {
         self.provider = provider
         self.installedCask = installedCask
+        self.isDevBuild = Self.isDevBuild(bundleIdentifier: bundleIdentifier)
         let version =
             Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         self.currentVersion = Self.parseVersion(version) ?? (0, 0, 0)
@@ -138,6 +150,10 @@ final class UpdateChecker {
     }
 
     func checkNow(includePreReleases: Bool = false) {
+        guard !isDevBuild else {
+            lastError = Self.devBuildNotice
+            return
+        }
         // Deduplicate concurrent calls
         guard checkTask == nil else { return }
 
@@ -176,6 +192,7 @@ final class UpdateChecker {
 
     func startPeriodicChecks(settings: AppSettings) {
         periodicTask?.cancel()
+        guard !isDevBuild else { return }
 
         periodicTask = Task {
             // Initial delay
@@ -191,6 +208,12 @@ final class UpdateChecker {
     }
 
     // MARK: - Version Utilities
+
+    /// Whether `bundleIdentifier` is the dev build's, which `run_app.sh` gives a
+    /// `.dev` suffix.
+    nonisolated static func isDevBuild(bundleIdentifier: String?) -> Bool {
+        bundleIdentifier?.hasSuffix(".dev") ?? false
+    }
 
     nonisolated static func parseVersion(_ string: String) -> (Int, Int, Int)? {
         var s = string
