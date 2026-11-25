@@ -112,6 +112,52 @@ final class WatchLoopOutputFoldersTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fallback.path), "the main destination is not touched")
     }
 
+    // MARK: - The start sidecar
+
+    func testAStartedRecordingLeavesItsAppTitleAndFolderBesideItsTracks() async throws {
+        let staging = try makeTempDirectory(prefix: "perAppStartSidecar")
+        let mapped = URL(fileURLWithPath: "/tmp/work-meetings", isDirectory: true)
+        let recorder = MockRecorder()
+        recorder.stagingStem = ("20260503_120000", staging)
+        let loop = makeLoop(recorder: recorder, folders: AppOutputFolders(folders: [Self.browser: mapped]))
+
+        try await loop.startManualRecording(pid: 42, appName: Self.browser, title: "Standup")
+
+        XCTAssertEqual(
+            RecordingStartSidecar.read(stem: "20260503_120000", in: staging),
+            RecordingStartSidecar(stem: "20260503_120000", appName: Self.browser, title: "Standup", assignedOutputDir: mapped),
+        )
+        await loop.stopManualRecording()
+    }
+
+    func testTheEnqueueRemovesTheStartSidecar() async throws {
+        let staging = try makeTempDirectory(prefix: "perAppStartSidecar")
+        let recorder = MockRecorder()
+        recorder.stagingStem = ("20260503_120000", staging)
+        recorder.mixPath = staging.appendingPathComponent("20260503_120000_mix.wav")
+        let queue = PipelineQueue()
+        let loop = makeLoop(queue: queue, recorder: recorder)
+
+        try await loop.handleMeeting(meeting())
+
+        XCTAssertEqual(queue.jobs.count, 1)
+        XCTAssertNil(RecordingStartSidecar.read(stem: "20260503_120000", in: staging))
+    }
+
+    func testACommittedRecordOnlyWriteRemovesTheStartSidecar() async throws {
+        let tmp = try makeTempDirectory(prefix: "perAppStartSidecarRecordOnly")
+        let mix = tmp.appendingPathComponent("20260503_120000_mix.wav")
+        try Data().write(to: mix)
+        let recorder = MockRecorder()
+        recorder.stagingStem = ("20260503_120000", tmp)
+        recorder.mixPath = mix
+        let loop = makeLoop(recorder: recorder, recordOnly: true, recordOnlyDir: tmp.appendingPathComponent("out"))
+
+        try await loop.handleMeeting(meeting())
+
+        XCTAssertNil(RecordingStartSidecar.read(stem: "20260503_120000", in: tmp))
+    }
+
     // MARK: - The guard
 
     func testManualRecordingIsRefusedWhileTheFoldersOverlap() async throws {

@@ -31,6 +31,17 @@ final class AppOutputFoldersTests: XCTestCase {
         XCTAssertNil(map.folder(forApp: "Zoom"))
     }
 
+    func testARecordingIsAssignedItsAppsFolderButAMicrophoneOneNever() {
+        let withMic = AppOutputFolders(folders: [
+            "Google Chrome Beta": URL(fileURLWithPath: "/Users/alice/Meetings", isDirectory: true),
+            ManualRecordingInfo.microphoneAppName: URL(fileURLWithPath: "/Users/alice/Mic", isDirectory: true),
+        ])
+
+        XCTAssertEqual(withMic.assignedFolder(forRecordingFrom: "Google Chrome Beta")?.path, "/Users/alice/Meetings")
+        XCTAssertNil(withMic.assignedFolder(forRecordingFrom: ManualRecordingInfo.microphoneAppName))
+        XCTAssertNil(withMic.assignedFolder(forRecordingFrom: "Zoom"))
+    }
+
     func testAnEmptyMapRoutesNothingAndRefusesNothing() {
         XCTAssertTrue(AppOutputFolders.empty.isEmpty)
         XCTAssertNil(AppOutputFolders.empty.folder(forApp: "Google Chrome Beta"))

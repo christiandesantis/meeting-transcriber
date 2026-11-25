@@ -35,6 +35,10 @@ enum RecordingFileSuffix {
     /// crash recovery can attach them. See `MicMuteLog`.
     static let micMuteLog = "_mic_mute.json"
 
+    /// What a recording was started for (app, title, assigned folder), saved
+    /// at the start so crash recovery can route it. See `RecordingStartSidecar`.
+    static let startInfo = "_start.json"
+
     /// Raw float32 app-audio temp file written live during capture (16 kHz
     /// mono, in-IOProc resampled) and consumed by `buildRecording` at `stop()`.
     /// A leftover one means the writer was killed mid-recording (crash) — see

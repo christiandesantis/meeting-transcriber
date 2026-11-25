@@ -91,6 +91,10 @@ class MockRecorder: RecordingProvider {
     var micDelay: TimeInterval = 0
     var micMuteIntervals: [MicMuteInterval] = []
 
+    /// What the recording reports as its staging stem. Nil by default, like the
+    /// protocol, so no test writes a start sidecar unless it asks to.
+    var stagingStem: (stem: String, directory: URL)?
+
     func start(source: RecordingSource, micDeviceUID: String?, debugLogging _: Bool) {
         startCalled = true
         capturedSource = source

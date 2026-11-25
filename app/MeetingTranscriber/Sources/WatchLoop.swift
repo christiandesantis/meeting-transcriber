@@ -317,6 +317,7 @@ class WatchLoop {
             source: source, micDeviceUID: micDeviceUID,
             debugLogging: verboseDiagnostics(),
         )
+        writeStartSidecar(for: recorder, appName: appName, title: title)
 
         let pid = source.appPID
         recordingSource = source
@@ -501,6 +502,7 @@ class WatchLoop {
         )
         // Only now: a start that failed leaves the carry for the retry.
         mutedCallToContinue = nil
+        writeStartSidecar(for: recorder, appName: meeting.pattern.appName, title: title)
         activeRecorder = recorder
         defer { activeRecorder = nil }
 

@@ -1536,7 +1536,10 @@ extension PipelineQueue {
                 try moveIntoPlace(src, to: dst)
                 logger.info("Audio moved: \(name, privacy: .private)")
                 moved.append(dst)
-                if suffix == RecordingFileSuffix.mix { MicMuteLog.remove(besideMix: src) }
+                if suffix == RecordingFileSuffix.mix {
+                    MicMuteLog.remove(besideMix: src)
+                    RecordingStartSidecar.remove(besideMix: src)
+                }
                 return dst
             } catch {
                 // Error left redacted: a file-move CocoaError embeds the

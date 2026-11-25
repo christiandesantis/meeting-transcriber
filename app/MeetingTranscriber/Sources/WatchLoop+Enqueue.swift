@@ -57,6 +57,8 @@ extension WatchLoop {
             assignedOutputDir: assignedOutputFolder(forApp: appName),
         )
         pipelineQueue?.enqueue(job)
+        // The job carries the app and folder now; the sidecar was only for a crash.
+        RecordingStartSidecar.remove(besideMix: recording.mixPath)
         logger.info("Enqueued pipeline job for: \(title, privacy: .private)")
     }
 }

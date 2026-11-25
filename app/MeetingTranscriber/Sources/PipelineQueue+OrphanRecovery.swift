@@ -100,18 +100,25 @@ extension PipelineQueue {
         // one on a queue nobody sees, and a second time on the active one.
         guard !candidates.isEmpty, !isRetired else { return }
 
+        let folders = outputFolders()
         for (group, micMuted) in candidates {
             guard let mixURL = group.mix else { continue }
+            let routing = RecordingStartSidecar.recoveredRouting(
+                stem: group.stem,
+                sidecar: RecordingStartSidecar.read(stem: group.stem, in: mixURL.deletingLastPathComponent()),
+                folders: folders,
+            )
             var job = PipelineJob(
-                meetingTitle: "Recovered Recording (\(group.stem))",
-                appName: "Unknown",
+                meetingTitle: routing.title,
+                appName: routing.appName,
                 mixPath: mixURL, appPath: group.app, micPath: group.mic,
                 micDelay: 0, micMuteIntervals: micMuted,
+                assignedOutputDir: routing.assignedOutputDir,
             )
-            // The mute log stays beside the recording. This job is not on
-            // disk yet (`saveSnapshot()` only schedules the write), so a
-            // process that dies now adopts the recording again and needs the
-            // log again. It goes when the recording leaves staging
+            // The mute log and the start sidecar stay beside the recording.
+            // This job is not on disk yet (`saveSnapshot()` only schedules the
+            // write), so a process that dies now adopts the recording again and
+            // needs both again. They go when the recording leaves staging
             // (`persistAudioToOutput`).
             stampTranscriptOutputOptions(on: &job)
             jobs.append(job)

@@ -4,22 +4,32 @@ import os.log
 private let logger = Logger(subsystem: AppPaths.logSubsystem, category: "WatchLoop")
 
 /// The recording side of the per-app output folders (`AppOutputFolders`): which
-/// folder a finished recording is assigned, and the refusal to record while
-/// the main output folder overlaps one of them. Split out of `WatchLoop.swift`
-/// to keep that file under the line cap.
+/// folder a recording is assigned, the start sidecar that keeps it for crash
+/// recovery, and the refusal to record while the main output folder overlaps
+/// one of them. Split out of `WatchLoop.swift` to keep that file under the
+/// line cap.
 extension WatchLoop {
     static let outputConflictTitle = "Recording Blocked"
 
     /// The folder a recording carried under `appName` is assigned, or nil for
     /// the main output folder.
     ///
-    /// Decided here, when the recording is handed on, and stored with it: the
-    /// pipeline job keeps it for every later write, the record-only path writes
-    /// into it at once. A microphone-only recording is never routed, whatever
-    /// the map holds, because "Microphone" names no app.
+    /// Decided when the recording starts, for its start sidecar, and again
+    /// when it is handed on, where it is stored with it: the pipeline job keeps
+    /// it for every later write, the record-only path writes into it at once.
     func assignedOutputFolder(forApp appName: String) -> URL? {
-        guard appName != ManualRecordingInfo.microphoneAppName else { return nil }
-        return outputFolders().folder(forApp: appName)
+        outputFolders().assignedFolder(forRecordingFrom: appName)
+    }
+
+    /// Save what this recording was started for beside its tracks, so a crash
+    /// recovery can route it (see `RecordingStartSidecar`). Nothing for a
+    /// recorder that reports no staging stem.
+    func writeStartSidecar(for recorder: any RecordingProvider, appName: String, title: String) {
+        guard let staging = recorder.stagingStem else { return }
+        RecordingStartSidecar(
+            stem: staging.stem, appName: appName, title: title,
+            assignedOutputDir: assignedOutputFolder(forApp: appName),
+        ).write(in: staging.directory)
     }
 
     /// Whether a recording must not start because of the output folders, and

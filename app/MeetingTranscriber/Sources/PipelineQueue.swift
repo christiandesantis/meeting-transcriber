@@ -261,6 +261,11 @@ class PipelineQueue {
     /// PipelineQueue+Stages.swift sets it.
     @ObservationIgnored var lastRecordingRelocation: Task<Void, Never>?
 
+    /// The per-app output folders, read when a recovered orphan is queued
+    /// (`adoptOrphanedRecordings`). Set by the controller that builds the
+    /// queue; empty for every other queue, which then recovers into its own folder.
+    @ObservationIgnored var outputFolders: () -> AppOutputFolders = { .empty }
+
     /// Called when a job completes (success or error) — for notifications
     var onJobStateChange: ((PipelineJob, JobState, JobState) -> Void)?
 

@@ -16,7 +16,8 @@ import Foundation
 /// value is an absolute folder, or one starting with `~/`.
 ///
 /// What is not mapped goes to the main output folder: an unmapped app, a
-/// microphone-only recording, a file import and a recovered orphan.
+/// microphone-only recording, a file import, and a recovered orphan whose
+/// start sidecar is missing (see `RecordingStartSidecar`).
 ///
 /// Always empty in the App Store build, where a sandboxed app could not write
 /// to a path it was never handed.
@@ -68,6 +69,14 @@ struct AppOutputFolders: Equatable {
     /// output folder. Exact and case-sensitive, like the names themselves.
     func folder(forApp appName: String) -> URL? {
         folders[appName]
+    }
+
+    /// The folder a recording carried under `appName` is assigned, or nil for
+    /// the main output folder. A microphone-only recording is never routed,
+    /// whatever the map holds, because "Microphone" names no app.
+    func assignedFolder(forRecordingFrom appName: String) -> URL? {
+        guard appName != ManualRecordingInfo.microphoneAppName else { return nil }
+        return folder(forApp: appName)
     }
 
     /// The first reason, in app-name order, that recording must stay off with

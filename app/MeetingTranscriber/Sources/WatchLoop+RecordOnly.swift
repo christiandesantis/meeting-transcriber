@@ -26,6 +26,9 @@ extension WatchLoop {
         )
         do {
             let kept = try await Task.detached(priority: .userInitiated) { try write.perform() }.value
+            // Only after the write commits: a failed one leaves the mix for the
+            // next launch's recovery, which reads the sidecar to route it.
+            RecordingStartSidecar.remove(besideMix: recording.mixPath)
             reportStagingFilesKept(kept)
         } catch {
             reportRecordOnlyFailure(error)

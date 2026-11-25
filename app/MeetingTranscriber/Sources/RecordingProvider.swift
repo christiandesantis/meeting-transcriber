@@ -73,6 +73,11 @@ protocol RecordingProvider {
     /// it would let the first buffers through. Default: nothing, like
     /// `setMicMuted`.
     func muteMicFromStart()
+
+    /// The stem the running recording's tracks are named by, and the staging
+    /// folder they are written to; nil when not recording. Default nil, so a
+    /// double writes no files beside tracks it does not have.
+    var stagingStem: (stem: String, directory: URL)? { get }
 }
 
 extension ChannelSignalAges {
@@ -142,4 +147,8 @@ extension RecordingProvider {
     func setMicMuted(_: Bool) {}
 
     func muteMicFromStart() {}
+
+    var stagingStem: (stem: String, directory: URL)? {
+        nil
+    }
 }

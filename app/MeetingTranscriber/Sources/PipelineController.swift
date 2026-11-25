@@ -301,7 +301,7 @@ final class PipelineController {
     /// in its initialiser and holds it for its lifetime, so a queue built and dropped takes and releases one.
     func makeQueue() -> PipelineQueue? {
         guard let engine = engineProvider?() else { return nil }
-        return PipelineQueue(
+        let built = PipelineQueue(
             engine: engine,
             diarizationFactory: { [self] in makeFluidDiarizer(mode: settings.diarizerMode) },
             diarizationFactoryWithMode: { [self] mode in makeFluidDiarizer(mode: mode) },
@@ -340,6 +340,8 @@ final class PipelineController {
             securityScope: queueEnvironment.securityScope,
             recordingRetention: recordingRetention,
         )
+        built.outputFolders = { [settings] in settings.outputFolderByApp }
+        return built
     }
 
     /// One-stop FluidDiarizer instantiation. Captures the current tuning fields

@@ -424,6 +424,10 @@ class DualSourceRecorder: RecordingProvider {
         micStartsMuted = true
     }
 
+    var stagingStem: (stem: String, directory: URL)? {
+        startTimestamp.map { ($0, recordingsDir) }
+    }
+
     private(set) var canMuteMic = false
     private(set) var isMicMuted = false
 
