@@ -25,7 +25,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase {
             pollInterval: 0.01,
             endGracePeriod: 0.01,
             maxDuration: 10,
-            noMic: true,
+            noMic: { true },
             recordOnly: { recordOnly },
             recordOnlyDestination: { .unscoped(recordOnlyDir ?? AppPaths.recordingsDir) },
             outputFolders: { folders },
@@ -71,7 +71,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase {
         let mapped = URL(fileURLWithPath: "/tmp/work-meetings", isDirectory: true)
         let recorder = MockRecorder()
         recorder.mixPath = URL(fileURLWithPath: "/tmp/test_per_app_routing.wav")
-        let queue = PipelineQueue()
+        let queue = try PipelineQueue(logDir: makeTempDirectory(prefix: "perAppQueue"))
         let loop = makeLoop(queue: queue, recorder: recorder, folders: AppOutputFolders(folders: [Self.browser: mapped]))
 
         try await loop.handleMeeting(meeting())
@@ -83,7 +83,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase {
         let mapped = URL(fileURLWithPath: "/tmp/work-meetings", isDirectory: true)
         let recorder = MockRecorder()
         recorder.mixPath = URL(fileURLWithPath: "/tmp/test_per_app_unmapped.wav")
-        let queue = PipelineQueue()
+        let queue = try PipelineQueue(logDir: makeTempDirectory(prefix: "perAppQueue"))
         let loop = makeLoop(queue: queue, recorder: recorder, folders: AppOutputFolders(folders: [Self.browser: mapped]))
 
         try await loop.handleMeeting(meeting(pattern: .zoom))
@@ -135,7 +135,7 @@ final class WatchLoopOutputFoldersTests: XCTestCase {
         let recorder = MockRecorder()
         recorder.stagingStem = ("20260503_120000", staging)
         recorder.mixPath = staging.appendingPathComponent("20260503_120000_mix.wav")
-        let queue = PipelineQueue()
+        let queue = try PipelineQueue(logDir: makeTempDirectory(prefix: "perAppQueue"))
         let loop = makeLoop(queue: queue, recorder: recorder)
 
         try await loop.handleMeeting(meeting())
